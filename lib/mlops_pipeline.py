@@ -36,7 +36,7 @@ from .video_data import (
 )
 from .video_modeling import VideoConfig, VideoDataset, variable_ar_collate
 from .video_augmentation_pipeline import pregenerate_augmented_dataset
-from .video_training import OptimConfig, TrainConfig, fit
+from .video_training import OptimConfig, TrainConfig
 from .video_modeling import PretrainedInceptionVideoModel
 from torch.utils.data import DataLoader
 
