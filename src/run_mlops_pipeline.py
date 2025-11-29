@@ -53,6 +53,15 @@ def main():
     output_base = os.path.join(project_root, "runs")
     run_dir, run_id = create_run_directory(output_base, "fvc_binary_classifier")
     
+    # Set up per-run file logging so we always have a pipeline log, even if SLURM output is missing
+    run_log_dir = Path(run_dir) / "logs"
+    run_log_dir.mkdir(parents=True, exist_ok=True)
+    run_log_path = run_log_dir / "pipeline.log"
+    file_handler = logging.FileHandler(run_log_path)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logging.getLogger().addHandler(file_handler)
+    
     logger.info("=" * 80)
     logger.info("MLOps Pipeline Run")
     logger.info("=" * 80)
