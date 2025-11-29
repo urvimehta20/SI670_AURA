@@ -14,10 +14,10 @@
 #SBATCH --job-name=fvc_stage1_aug
 #SBATCH --account=eecs442f25_class
 #SBATCH --partition=gpu
-#SBATCH --gpus=0  # Augmentation doesn't need GPU
+#SBATCH --gpus=1  # Augmentation doesn't need GPU
 #SBATCH --time=8:00:00
 #SBATCH --mem=80G
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --output=logs/stage1_aug-%j.out
 #SBATCH --error=logs/stage1_aug-%j.err
 #SBATCH --mail-user=santoshd@umich.edu

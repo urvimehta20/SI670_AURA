@@ -21,13 +21,25 @@ from .transforms import (
     temporal_frame_duplicate,
     temporal_reverse,
 )
-from .pregenerate import (
-    generate_augmented_clips,
-    pregenerate_augmented_dataset,
-    load_precomputed_clip,
-    build_comprehensive_frame_transforms,
-    apply_temporal_augmentations,
-)
+# Pregenerate imports are optional - only import if needed
+# These are used for pre-generation pipeline, not Stage 1 augmentation
+try:
+    from .pregenerate import (
+        generate_augmented_clips,
+        pregenerate_augmented_dataset,
+        load_precomputed_clip,
+        build_comprehensive_frame_transforms,
+        apply_temporal_augmentations,
+    )
+    PREGENERATE_AVAILABLE = True
+except ImportError:
+    # If pregenerate can't be imported (e.g., missing lib.models), make functions unavailable
+    PREGENERATE_AVAILABLE = False
+    generate_augmented_clips = None
+    pregenerate_augmented_dataset = None
+    load_precomputed_clip = None
+    build_comprehensive_frame_transforms = None
+    apply_temporal_augmentations = None
 from .pipeline import stage1_augment_videos
 
 __all__ = [

@@ -20,7 +20,18 @@ import polars as pl
 import torch
 from tqdm import tqdm
 
-from lib.models import VideoConfig, _read_video_wrapper, uniform_sample_indices
+# Import from lib.models - handle import error gracefully
+try:
+    from lib.models import VideoConfig, _read_video_wrapper, uniform_sample_indices
+except ImportError:
+    # Fallback: import directly from video module
+    try:
+        from lib.models.video import VideoConfig, _read_video_wrapper, uniform_sample_indices
+    except ImportError:
+        # If still fails, this module won't work but won't break Stage 1
+        VideoConfig = None
+        _read_video_wrapper = None
+        uniform_sample_indices = None
 from lib.utils.paths import resolve_video_path
 from lib.utils.memory import log_memory_stats, aggressive_gc
 from lib.augmentation.transforms import build_comprehensive_frame_transforms, apply_temporal_augmentations
