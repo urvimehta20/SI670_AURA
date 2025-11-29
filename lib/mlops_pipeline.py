@@ -213,8 +213,10 @@ def build_mlops_pipeline(config: RunConfig, tracker: ExperimentTracker,
         filtered_df = filter_existing_videos(meta_df, config.project_root, check_frames=False)
         logger.info("After filtering: %d valid videos", filtered_df.height)
 
-        # Optional: limit to a tiny balanced subset for SLURM test runs
-        filtered_df = maybe_limit_to_small_test_subset(filtered_df, max_per_class=2)
+        # Optional: limit to a tiny balanced subset for SLURM test runs.
+        # Use 5 per class by default so 5-fold CV and multi-model runs
+        # have enough data while still being small.
+        filtered_df = maybe_limit_to_small_test_subset(filtered_df, max_per_class=5)
         
         return {"metadata": filtered_df}
     
@@ -330,6 +332,13 @@ def build_mlops_pipeline(config: RunConfig, tracker: ExperimentTracker,
         
         from .video_data import make_balanced_batch_sampler
         
+        # For CPU-only runs or when memory is constrained, use num_workers=0
+        # to avoid multiprocessing overhead and OOM from worker processes
+        effective_num_workers = config.num_workers
+        if not torch.cuda.is_available() or os.environ.get("FVC_TEST_MODE", "").strip().lower() in ("1", "true", "yes", "y"):
+            effective_num_workers = 0
+            logger.info("Using num_workers=0 (CPU-only or test mode to avoid OOM)")
+        
         # Try balanced sampling
         try:
             balanced_sampler = make_balanced_batch_sampler(
@@ -342,11 +351,11 @@ def build_mlops_pipeline(config: RunConfig, tracker: ExperimentTracker,
             train_loader = DataLoader(
                 train_ds,
                 batch_sampler=balanced_sampler,
-                num_workers=config.num_workers,
+                num_workers=effective_num_workers,
                 pin_memory=torch.cuda.is_available(),
                 collate_fn=variable_ar_collate,
-                persistent_workers=config.num_workers > 0,
-                prefetch_factor=2 if config.num_workers > 0 else None,
+                persistent_workers=effective_num_workers > 0,
+                prefetch_factor=2 if effective_num_workers > 0 else None,
             )
         except Exception as e:
             logger.warning("Balanced sampling failed: %s. Using regular sampling.", e)
@@ -354,7 +363,7 @@ def build_mlops_pipeline(config: RunConfig, tracker: ExperimentTracker,
                 train_ds,
                 batch_size=config.batch_size,
                 shuffle=True,
-                num_workers=config.num_workers,
+                num_workers=effective_num_workers,
                 pin_memory=torch.cuda.is_available(),
                 collate_fn=variable_ar_collate,
             )
@@ -363,7 +372,7 @@ def build_mlops_pipeline(config: RunConfig, tracker: ExperimentTracker,
             val_ds,
             batch_size=config.batch_size,
             shuffle=False,
-            num_workers=config.num_workers,
+            num_workers=effective_num_workers,
             pin_memory=torch.cuda.is_available(),
             collate_fn=variable_ar_collate,
         )
@@ -461,8 +470,9 @@ def fit_with_tracking(
         logger.info("Resuming from epoch %d", start_epoch)
     
     best_val_acc = 0.0
+    first_epoch = start_epoch or 1
     
-    for epoch in range(start_epoch or 1, train_cfg.num_epochs + 1):
+    for epoch in range(first_epoch, train_cfg.num_epochs + 1):
         # Aggressive GC at start of each epoch
         aggressive_gc(clear_cuda=True)
         log_memory_stats(f"epoch {epoch} start")
@@ -482,6 +492,11 @@ def fit_with_tracking(
             )
             
             tracker.log_epoch_metrics(epoch, {"loss": train_loss}, phase="train")
+            
+            # Step scheduler at the end of the epoch (AFTER optimizer.step() calls in train_one_epoch)
+            # This ensures scheduler.step() is called after optimizer.step() in the same epoch
+            if train_loss is not None:
+                scheduler.step()
             
             # Aggressive GC after training
             aggressive_gc(clear_cuda=True)
@@ -510,11 +525,12 @@ def fit_with_tracking(
                     is_best=is_best
                 )
             
-            scheduler.step()
-            
-            # Aggressive GC after epoch
+            # Ultra aggressive GC after epoch
             aggressive_gc(clear_cuda=True)
             log_memory_stats(f"epoch {epoch} end")
+            
+            # Additional GC pass after logging to ensure maximum cleanup
+            aggressive_gc(clear_cuda=True)
         
         except Exception as e:
             if check_oom_error(e):

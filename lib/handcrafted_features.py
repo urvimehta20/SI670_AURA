@@ -37,8 +37,11 @@ def extract_noise_residual(frame: np.ndarray) -> np.ndarray:
     else:
         gray = frame
     
-    # Convert to float
-    gray_float = gray.astype(np.float32)
+    # Convert to float64 to match CV_64F operations below.
+    # Some OpenCV builds do not support mixing float32 input with CV_64F output
+    # for linear filters (see "Unsupported combination of source format (=5) and
+    # destination format (=6)" errors). Using float64 consistently avoids this.
+    gray_float = gray.astype(np.float64)
     
     # Apply Gaussian blur to get smooth version
     blurred = cv2.GaussianBlur(gray_float, (5, 5), 1.0)
@@ -141,16 +144,19 @@ def extract_blur_sharpness(frame: np.ndarray) -> Dict[str, float]:
     else:
         gray = frame
     
-    # Convert to float
-    gray_float = gray.astype(np.float32)
+    # Ensure grayscale is uint8; many OpenCV builds are best-behaved when using
+    # uint8 input with CV_64F output for linear filters. Using float32 input
+    # with CV_64F can trigger "Unsupported combination of source format (=5)
+    # and destination format (=6)" on some platforms.
+    gray_u8 = gray.astype(np.uint8, copy=False)
     
     # Laplacian variance (measure of sharpness)
-    laplacian = cv2.Laplacian(gray_float, cv2.CV_64F)
+    laplacian = cv2.Laplacian(gray_u8, cv2.CV_64F)
     laplacian_var = float(np.var(laplacian))
     
     # Gradient magnitude statistics
-    grad_x = cv2.Sobel(gray_float, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray_float, cv2.CV_64F, 0, 1, ksize=3)
+    grad_x = cv2.Sobel(gray_u8, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray_u8, cv2.CV_64F, 0, 1, ksize=3)
     gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
     
     grad_mean = float(np.mean(gradient_magnitude))
@@ -160,7 +166,8 @@ def extract_blur_sharpness(frame: np.ndarray) -> Dict[str, float]:
     # Tenengrad (another sharpness measure)
     tenengrad = float(np.sum(gradient_magnitude**2))
     
-    # Brenner gradient (simple sharpness measure)
+    # Brenner gradient (simple sharpness measure) – operate on float for stability
+    gray_float = gray_u8.astype(np.float32)
     brenner = float(np.sum((gray_float[2:, :] - gray_float[:-2, :])**2))
     
     stats = {

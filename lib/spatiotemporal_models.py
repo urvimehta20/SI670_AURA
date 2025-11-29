@@ -59,12 +59,32 @@ class SlowFastModel(nn.Module):
             # Replace classification head for binary classification
             self.backbone.fc = nn.Linear(self.backbone.fc.in_features, 1)
             self.use_torchvision = True
+            self.use_r3d_fallback = False
             
         except (ImportError, AttributeError):
-            # Fallback: implement simplified SlowFast
-            logger.warning("torchvision SlowFast not available. Using simplified implementation.")
-            self.use_torchvision = False
-            self._build_simplified_slowfast(slow_frames, fast_frames, alpha, beta)
+            # Fallback: use r3d_18 as pretrained backbone (similar to X3D)
+            logger.warning("torchvision SlowFast not available. Using r3d_18 as pretrained backbone.")
+            try:
+                from torchvision.models.video import r3d_18, R3D_18_Weights
+                if pretrained:
+                    try:
+                        weights = R3D_18_Weights.KINETICS400_V1
+                        self.backbone = r3d_18(weights=weights)
+                    except (AttributeError, ValueError):
+                        self.backbone = r3d_18(pretrained=True)
+                else:
+                    self.backbone = r3d_18(pretrained=False)
+                
+                # Replace classification head for binary classification
+                self.backbone.fc = nn.Linear(self.backbone.fc.in_features, 1)
+                self.use_torchvision = True  # Use backbone directly in forward
+                self.use_r3d_fallback = True  # Mark that we're using r3d_18
+            except (ImportError, AttributeError):
+                # Final fallback: simplified SlowFast without pretrained weights
+                logger.warning("r3d_18 also not available. Using simplified SlowFast (no pretrained weights).")
+                self.use_torchvision = False
+                self.use_r3d_fallback = False
+                self._build_simplified_slowfast(slow_frames, fast_frames, alpha, beta)
         
         self.slow_frames = slow_frames
         self.fast_frames = fast_frames

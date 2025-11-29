@@ -28,7 +28,11 @@ def collect_logits_and_labels(
     for clips, labels in loader:
         clips = clips.to(device)
         labels = labels.to(device)
-        logits = model(clips).squeeze(-1)
+        logits = model(clips)
+        # For binary models that output a single logit per sample, squeeze it;
+        # for multi-class models (including 2-logit naive_cnn) keep (N, C).
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            logits = logits.squeeze(-1)
         all_logits.append(logits.detach().cpu())
         all_labels.append(labels.detach().cpu())
     return torch.cat(all_logits, dim=0), torch.cat(all_labels, dim=0)
@@ -39,9 +43,26 @@ def basic_classification_metrics(
     labels: torch.Tensor,
     threshold: float = 0.5,
 ) -> Dict[str, float]:
-    """Compute accuracy, precision, recall, F1 for binary classification."""
-    probs = logits.sigmoid()
-    preds = (probs >= threshold).long()
+    """
+    Compute accuracy, precision, recall, F1 for binary classification.
+
+    Supports both:
+    - Binary models with a single logit per sample (logits shape (N,))
+    - Multi-class models with logits shape (N, C) (we treat class 1 vs 0)
+    """
+    if logits.ndim == 1:
+        # Single-logit binary case
+        probs = logits.sigmoid()
+        preds = (probs >= threshold).long()
+    else:
+        # Multi-class case (including 2-logit naive_cnn)
+        # Use softmax over classes and take argmax as predicted class.
+        probs = logits.softmax(dim=1)
+        preds = probs.argmax(dim=1)
+
+    # Ensure labels are 1D tensor of class indices
+    if labels.ndim > 1:
+        labels = labels.view(-1)
 
     tp = ((preds == 1) & (labels == 1)).sum().item()
     tn = ((preds == 0) & (labels == 0)).sum().item()
@@ -68,8 +89,15 @@ def confusion_matrix(
     threshold: float = 0.5,
 ) -> torch.Tensor:
     """Return 2x2 confusion matrix for binary classification."""
-    probs = logits.sigmoid()
-    preds = (probs >= threshold).long()
+    if logits.ndim == 1:
+        probs = logits.sigmoid()
+        preds = (probs >= threshold).long()
+    else:
+        probs = logits.softmax(dim=1)
+        preds = probs.argmax(dim=1)
+
+    if labels.ndim > 1:
+        labels = labels.view(-1)
 
     cm = torch.zeros((2, 2), dtype=torch.long)
     for p, y in zip(preds, labels):
@@ -87,7 +115,11 @@ def roc_auc(
     except Exception:
         return -1.0
 
-    probs = logits.sigmoid().numpy()
+    if logits.ndim == 1:
+        probs = logits.sigmoid().numpy()
+    else:
+        # Use probability of class 1 from softmax
+        probs = logits.softmax(dim=1)[:, 1].numpy()
     y = labels.numpy()
     try:
         return float(roc_auc_score(y, probs))

@@ -55,12 +55,16 @@ class LogisticRegressionBaseline:
         video_paths = df["video_path"].to_list()
         labels = df["label"].to_list()
         
-        # Extract features (small batch size to be memory-safe)
+        # Extract features (ultra conservative batch size for OOM safety)
+        from .mlops_utils import aggressive_gc
         features = self.feature_extractor.extract_batch(
             video_paths,
             project_root,
-            batch_size=5,
+            batch_size=3,  # Ultra conservative: reduced from 5
         )
+        
+        # Aggressive GC after feature extraction
+        aggressive_gc(clear_cuda=False)
         
         # Convert labels to binary (0/1)
         label_map = {label: idx for idx, label in enumerate(sorted(set(labels)))}
@@ -92,12 +96,16 @@ class LogisticRegressionBaseline:
         
         video_paths = df["video_path"].to_list()
         
-        # Extract features (small batch size to be memory-safe)
+        # Extract features (ultra conservative batch size for OOM safety)
+        from .mlops_utils import aggressive_gc
         features = self.feature_extractor.extract_batch(
             video_paths,
             project_root,
-            batch_size=5,
+            batch_size=3,  # Ultra conservative: reduced from 5
         )
+        
+        # Aggressive GC after feature extraction
+        aggressive_gc(clear_cuda=False)
         
         # Scale features
         features_scaled = self.scaler.transform(features)
@@ -153,12 +161,16 @@ class SVMBaseline:
         video_paths = df["video_path"].to_list()
         labels = df["label"].to_list()
         
-        # Extract features (small batch size to be memory-safe)
+        # Extract features (ultra conservative batch size for OOM safety)
+        from .mlops_utils import aggressive_gc
         features = self.feature_extractor.extract_batch(
             video_paths,
             project_root,
-            batch_size=5,
+            batch_size=3,  # Ultra conservative: reduced from 5
         )
+        
+        # Aggressive GC after feature extraction
+        aggressive_gc(clear_cuda=False)
         
         # Convert labels to binary (0/1)
         label_map = {label: idx for idx, label in enumerate(sorted(set(labels)))}

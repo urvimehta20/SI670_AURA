@@ -45,9 +45,9 @@ def main():
     project_root = os.path.abspath(project_root)
     data_csv = os.path.join(project_root, "data", "video_index_input.csv")
     
-    # Clean up previous runs and logs before starting
-    logger.info("Cleaning up previous runs and logs...")
-    cleanup_runs_and_logs(project_root, keep_models=False)
+    # Clean up previous runs, logs, models, and intermediate_data for fresh run
+    logger.info("Cleaning up previous runs, logs, models, and intermediate_data for fresh start...")
+    cleanup_runs_and_logs(project_root, keep_models=False, keep_intermediate_data=False)
     
     # Create run directory
     output_base = os.path.join(project_root, "runs")
@@ -159,6 +159,7 @@ def main():
             logger.info("=" * 80)
             
             # Define models to train (all models from proposal)
+            all_available = list_available_models()
             models_to_train = [
                 "logistic_regression",
                 "svm",
@@ -169,11 +170,23 @@ def main():
                 "x3d",
             ]
             
-            # Allow override via environment variable
+            # Filter to only available models
+            models_to_train = [m for m in models_to_train if m in all_available]
+            
+            # Option 1: SKIP_MODELS - exclude specific models (comma-separated)
+            # Example: SKIP_MODELS="naive_cnn,slowfast"
+            if "SKIP_MODELS" in os.environ:
+                skip_list = [m.strip() for m in os.environ["SKIP_MODELS"].split(",")]
+                models_to_train = [m for m in models_to_train if m not in skip_list]
+                logger.info("Skipping models: %s", skip_list)
+                logger.info("Remaining models to train: %s", models_to_train)
+            
+            # Option 2: MODELS_TO_TRAIN - explicitly specify which models (takes precedence over SKIP_MODELS)
+            # Example: MODELS_TO_TRAIN="logistic_regression,svm,vit_gru"
             if "MODELS_TO_TRAIN" in os.environ:
                 env_models = os.environ["MODELS_TO_TRAIN"].split(",")
-                models_to_train = [m.strip() for m in env_models if m.strip() in list_available_models()]
-                logger.info("Using models from environment: %s", models_to_train)
+                models_to_train = [m.strip() for m in env_models if m.strip() in all_available]
+                logger.info("Using models from MODELS_TO_TRAIN: %s", models_to_train)
             
             logger.info("Models to train: %s", models_to_train)
             logger.info("Using %d-fold stratified cross-validation", n_splits)

@@ -260,20 +260,79 @@ def stratified_kfold(
         for i, idx in enumerate(label_idx):
             folds_indices[i % n_splits].append(int(idx))
 
+    # Ensure every fold has at least one validation sample.
+    # For very small datasets (e.g., tiny test mode) the initial stratified
+    # assignment can leave some folds empty; we fix that here by borrowing
+    # one index from the largest folds.
+    fold_sizes = [len(fi) for fi in folds_indices]
+    for k in range(n_splits):
+        if fold_sizes[k] == 0:
+            # Find a donor fold with at least 2 samples to spare
+            donor = max(
+                (i for i in range(n_splits) if fold_sizes[i] > 1),
+                key=lambda i: fold_sizes[i],
+                default=None,
+            )
+            if donor is not None:
+                moved_idx = folds_indices[donor].pop()
+                folds_indices[k].append(moved_idx)
+                fold_sizes[donor] -= 1
+                fold_sizes[k] += 1
+    
     folds: List[Tuple[pl.DataFrame, pl.DataFrame]] = []
     for k in range(n_splits):
         val_idx = np.array(folds_indices[k], dtype=int)
         train_idx = np.setdiff1d(indices, val_idx)
         train_df = df[train_idx.tolist()]
         val_df = df[val_idx.tolist()]
+        
+        # Verify balanced splits and log warnings if imbalanced
+        if "label" in train_df.columns:
+            train_label_counts = train_df["label"].value_counts().sort_index()
+            val_label_counts = val_df["label"].value_counts().sort_index()
+            
+            # Check if all classes are present in both train and val
+            train_labels = set(train_label_counts.keys().to_list())
+            val_labels = set(val_label_counts.keys().to_list())
+            all_labels = train_labels | val_labels
+            
+            if len(all_labels) > 1:  # Binary or multi-class
+                # Calculate class balance ratios
+                train_total = train_df.height
+                val_total = val_df.height
+                
+                for label in all_labels:
+                    train_count = train_label_counts.get(label, 0)
+                    val_count = val_label_counts.get(label, 0)
+                    
+                    train_ratio = train_count / train_total if train_total > 0 else 0.0
+                    val_ratio = val_count / val_total if val_total > 0 else 0.0
+                    
+                    # Warn if class is missing or severely imbalanced
+                    if train_count == 0:
+                        logger.warning(
+                            "Fold %d: Class %d missing in training set (val has %d)",
+                            k + 1, label, val_count
+                        )
+                    elif val_count == 0:
+                        logger.warning(
+                            "Fold %d: Class %d missing in validation set (train has %d)",
+                            k + 1, label, train_count
+                        )
+                    elif abs(train_ratio - val_ratio) > 0.2:  # More than 20% difference
+                        logger.warning(
+                            "Fold %d: Class %d imbalance - train: %.1f%%, val: %.1f%%",
+                            k + 1, label, train_ratio * 100, val_ratio * 100
+                        )
+        
         folds.append((train_df, val_df))
-
+    
     return folds
 
 
 def maybe_limit_to_small_test_subset(
     df: pl.DataFrame,
-    max_per_class: int = 2,
+    max_per_class: int = 5,
     env_var: str = "FVC_TEST_MODE",
 ) -> pl.DataFrame:
     """
@@ -375,11 +434,23 @@ def make_balanced_batch_sampler(
     if batch_size % 2 != 0:
         raise ValueError(f"batch_size must be even for balanced sampling, got {batch_size}")
     
-    if len(class_0_indices) < samples_per_class or len(class_1_indices) < samples_per_class:
-        raise ValueError(
-            f"Not enough samples: need {samples_per_class} per class, "
-            f"but have {len(class_0_indices)} class 0 and {len(class_1_indices)} class 1"
+    # Adapt to tiny datasets: clamp samples_per_class to what is actually available
+    # instead of failing entirely. This avoids warnings like:
+    # "Not enough samples: need 8 per class, but have 1 class 0 and 2 class 1."
+    max_possible = min(len(class_0_indices), len(class_1_indices))
+    if max_possible == 0:
+        raise ValueError("No samples available for at least one class; cannot build balanced sampler.")
+    if samples_per_class > max_possible:
+        logger = logging.getLogger(__name__)
+        logger.info(
+            "Reducing samples_per_class from %d to %d for balanced sampling "
+            "(available: %d class 0, %d class 1).",
+            samples_per_class,
+            max_possible,
+            len(class_0_indices),
+            len(class_1_indices),
         )
+        samples_per_class = max_possible
     
     class BalancedBatchSampler(Sampler):
         def __init__(self, class_0_idx, class_1_idx, samples_per_class, shuffle, random_state):
@@ -418,7 +489,8 @@ def make_balanced_batch_sampler(
                 if self.shuffle:
                     self.rng.shuffle(batch_indices)
                 
-                yield from batch_indices
+                # DataLoader expects batch_sampler to yield a list/sequence of indices
+                yield batch_indices
         
         def __len__(self):
             return self.num_batches * (self.samples_per_class * 2)

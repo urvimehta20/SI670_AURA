@@ -62,8 +62,10 @@ def build_kfold_pipeline(config: RunConfig, tracker: ExperimentTracker,
         filtered_df = filter_existing_videos(meta_df, config.project_root, check_frames=False)
         logger.info("After filtering: %d valid videos", filtered_df.height)
 
-        # Optional: limit to a tiny balanced subset for SLURM test runs
-        filtered_df = maybe_limit_to_small_test_subset(filtered_df, max_per_class=2)
+        # Optional: limit to a tiny balanced subset for SLURM test runs.
+        # Use 5 per class by default so 5-fold CV has enough data
+        # in each training/validation split while still being tiny.
+        filtered_df = maybe_limit_to_small_test_subset(filtered_df, max_per_class=5)
 
         aggressive_gc(clear_cuda=False)  # GC after data loading
         
@@ -130,13 +132,10 @@ def build_kfold_pipeline(config: RunConfig, tracker: ExperimentTracker,
         logger.info("=" * 80)
         logger.info("Total unique videos: %d", all_train_df.height)
         
-        if shared_aug_metadata_path.exists():
-            logger.info("✓ Shared augmentations already exist. Loading from: %s", shared_aug_metadata_path)
-            shared_aug_df = pl.read_csv(str(shared_aug_metadata_path))
-        else:
+        def _generate_and_persist_shared_aug() -> pl.DataFrame:
             logger.info("Generating shared augmentations (this may take a while)...")
             # Generate augmentations with OOM handling
-            shared_aug_df = safe_execute(
+            df = safe_execute(
                 lambda: pregenerate_augmented_dataset(
                     all_train_df,
                     config.project_root,
@@ -148,8 +147,59 @@ def build_kfold_pipeline(config: RunConfig, tracker: ExperimentTracker,
                 oom_retry=True,
                 max_retries=1,
             )
-            shared_aug_df.write_csv(str(shared_aug_metadata_path))
-            logger.info("✓ Generated %d shared augmented clips into %s", shared_aug_df.height, shared_aug_dir)
+            if df is None or getattr(df, "height", 0) == 0:
+                logger.warning(
+                    "Shared augmentation generation for K-fold returned empty DataFrame. "
+                    "Falling back to using original videos without precomputed augmentations."
+                )
+                # Fallback: use original training videos as a "no-op" augmentation dataset
+                fallback_df = all_train_df.select(["video_path", "label"]).with_columns(
+                    [
+                        pl.col("video_path").alias("original_video"),
+                        pl.lit(0).alias("augmentation_idx"),
+                    ]
+                )
+                if fallback_df.height == 0:
+                    logger.error(
+                        "Fallback augmentation dataset for K-fold is also empty. "
+                        "No training videos available after preprocessing."
+                    )
+                    raise RuntimeError(
+                        "No training videos available to build shared augmentation dataset"
+                    )
+                fallback_df.write_csv(str(shared_aug_metadata_path))
+                logger.info(
+                    "✓ Created fallback shared augmentation metadata for K-fold with %d entries "
+                    "(no precomputed clips).",
+                    fallback_df.height,
+                )
+                return fallback_df
+
+            df.write_csv(str(shared_aug_metadata_path))
+            logger.info("✓ Generated %d shared augmented clips into %s", df.height, shared_aug_dir)
+            return df
+
+        if shared_aug_metadata_path.exists():
+            logger.info("✓ Shared augmentations already exist. Loading from: %s", shared_aug_metadata_path)
+            try:
+                shared_aug_df = pl.read_csv(str(shared_aug_metadata_path))
+                if shared_aug_df is None or shared_aug_df.height == 0:
+                    logger.warning(
+                        "Shared augmentations metadata at %s is empty for K-fold. "
+                        "Regenerating shared augmentations.",
+                        shared_aug_metadata_path,
+                    )
+                    shared_aug_df = _generate_and_persist_shared_aug()
+            except Exception as e:
+                logger.error(
+                    "Failed to read shared augmentations metadata from %s for K-fold: %s. "
+                    "Regenerating shared augmentations.",
+                    shared_aug_metadata_path,
+                    e,
+                )
+                shared_aug_df = _generate_and_persist_shared_aug()
+        else:
+            shared_aug_df = _generate_and_persist_shared_aug()
         
         aggressive_gc(clear_cuda=True)
         
@@ -184,6 +234,13 @@ def build_kfold_pipeline(config: RunConfig, tracker: ExperimentTracker,
                 # Create loaders
                 from .video_data import make_balanced_batch_sampler
                 
+                # For CPU-only runs or when memory is constrained, use num_workers=0
+                # to avoid multiprocessing overhead and OOM from worker processes
+                effective_num_workers = config.num_workers
+                if not torch.cuda.is_available() or os.environ.get("FVC_TEST_MODE", "").strip().lower() in ("1", "true", "yes", "y"):
+                    effective_num_workers = 0
+                    logger.info("Using num_workers=0 (CPU-only or test mode to avoid OOM)")
+                
                 try:
                     balanced_sampler = make_balanced_batch_sampler(
                         aug_df,
@@ -195,11 +252,11 @@ def build_kfold_pipeline(config: RunConfig, tracker: ExperimentTracker,
                     train_loader = DataLoader(
                         train_ds,
                         batch_sampler=balanced_sampler,
-                        num_workers=config.num_workers,
+                        num_workers=effective_num_workers,
                         pin_memory=torch.cuda.is_available(),
                         collate_fn=variable_ar_collate,
-                        persistent_workers=config.num_workers > 0,
-                        prefetch_factor=2 if config.num_workers > 0 else None,
+                        persistent_workers=effective_num_workers > 0,
+                        prefetch_factor=2 if effective_num_workers > 0 else None,
                     )
                 except Exception as e:
                     logger.warning("Balanced sampling failed: %s. Using regular sampling.", e)
@@ -207,7 +264,7 @@ def build_kfold_pipeline(config: RunConfig, tracker: ExperimentTracker,
                         train_ds,
                         batch_size=config.batch_size,
                         shuffle=True,
-                        num_workers=config.num_workers,
+                        num_workers=effective_num_workers,
                         pin_memory=torch.cuda.is_available(),
                         collate_fn=variable_ar_collate,
                     )
@@ -216,7 +273,7 @@ def build_kfold_pipeline(config: RunConfig, tracker: ExperimentTracker,
                     val_ds,
                     batch_size=config.batch_size,
                     shuffle=False,
-                    num_workers=config.num_workers,
+                    num_workers=effective_num_workers,
                     pin_memory=torch.cuda.is_available(),
                     collate_fn=variable_ar_collate,
                 )

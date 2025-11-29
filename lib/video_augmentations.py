@@ -66,9 +66,15 @@ class RandomAffine:
             shear_y = random.uniform(-self.shear, self.shear)
             
             self.params = (translate_x, translate_y, scale, shear_x, shear_y)
+            # torchvision.transforms.functional.affine uses 'fill' (not 'fillcolor')
+            # in recent versions. Using 'fill' keeps this compatible across versions.
             return transforms.functional.affine(
-                img, angle=0, translate=(translate_x, translate_y),
-                scale=scale, shear=(shear_x, shear_y), fillcolor=0
+                img,
+                angle=0,
+                translate=(translate_x, translate_y),
+                scale=scale,
+                shear=(shear_x, shear_y),
+                fill=0,
             )
         return img
 
@@ -261,6 +267,29 @@ class ConsistentAugmentation:
 # ---------------------------------------------------------------------------
 
 
+class LetterboxResize:
+    """
+    Deterministic letterbox resize to a fixed square size.
+    Implemented as a top-level class so it is picklable for
+    multiprocessing DataLoader workers.
+    """
+
+    def __init__(self, fixed_size: int):
+        self.fixed_size = fixed_size
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        w, h = img.size
+        scale = min(self.fixed_size / w, self.fixed_size / h)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        img_resized = img.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (self.fixed_size, self.fixed_size), (0, 0, 0))
+        paste_x = (self.fixed_size - new_w) // 2
+        paste_y = (self.fixed_size - new_h) // 2
+        canvas.paste(img_resized, (paste_x, paste_y))
+        return canvas
+
+
 def build_comprehensive_frame_transforms(
     train: bool = True,
     fixed_size: Optional[int] = None,
@@ -322,20 +351,10 @@ def build_comprehensive_frame_transforms(
     
     # Resize strategy
     if fixed_size is not None:
-        def letterbox_resize(img):
-            from PIL import Image
-            w, h = img.size
-            scale = min(fixed_size / w, fixed_size / h)
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            img_resized = img.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
-            canvas = Image.new('RGB', (fixed_size, fixed_size), (0, 0, 0))
-            paste_x = (fixed_size - new_w) // 2
-            paste_y = (fixed_size - new_h) // 2
-            canvas.paste(img_resized, (paste_x, paste_y))
-            return canvas
-        
-        transform_list.append(letterbox_resize)
+        # Use a top-level, picklable transform to avoid multiprocessing
+        # pickling errors like:
+        # "Can't get local object 'build_comprehensive_frame_transforms.<locals>.letterbox_resize'"
+        transform_list.append(LetterboxResize(fixed_size))
     elif max_size is not None:
         transform_list.append(transforms.Resize(max_size, antialias=True))
     

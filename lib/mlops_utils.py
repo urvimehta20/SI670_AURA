@@ -16,21 +16,37 @@ logger = logging.getLogger(__name__)
 
 def aggressive_gc(clear_cuda: bool = True) -> None:
     """
-    Perform VERY aggressive garbage collection.
+    Perform ULTRA aggressive garbage collection for maximum memory cleanup.
     
     Args:
         clear_cuda: If True, also clear CUDA cache
     """
-    # Multiple GC passes for thorough cleanup
-    for _ in range(3):
+    # Ultra aggressive: Multiple GC passes with different thresholds
+    # First pass: collect everything
+    for _ in range(5):
         gc.collect()
     
-    # Clear CUDA cache if available
-    if clear_cuda and torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+    # Second pass: collect with lower threshold (more aggressive)
+    import gc as gc_module
+    old_thresholds = gc_module.get_threshold()
+    gc_module.set_threshold(1, 1, 1)  # Most aggressive: collect immediately
+    for _ in range(3):
+        gc.collect()
+    gc_module.set_threshold(*old_thresholds)  # Restore original thresholds
     
-    logger.debug("Aggressive GC completed (CUDA cache cleared: %s)", clear_cuda)
+    # Final pass: standard collection
+    for _ in range(2):
+        gc.collect()
+    
+    # Clear CUDA cache if available (multiple times for thorough cleanup)
+    if clear_cuda and torch.cuda.is_available():
+        for _ in range(3):
+            torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        # Final cache clear
+        torch.cuda.empty_cache()
+    
+    logger.debug("Ultra aggressive GC completed (CUDA cache cleared: %s)", clear_cuda)
 
 
 def check_oom_error(error: Exception) -> bool:

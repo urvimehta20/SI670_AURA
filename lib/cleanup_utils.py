@@ -11,13 +11,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def cleanup_runs_and_logs(project_root: str, keep_models: bool = False) -> None:
+def cleanup_runs_and_logs(project_root: str, keep_models: bool = False, keep_intermediate_data: bool = False) -> None:
     """
-    Clean up runs/ and logs/ directories before starting a new run.
+    Clean up runs/, logs/, models/, and intermediate_data/ directories before starting a new run.
     
     Args:
         project_root: Project root directory
         keep_models: If True, keep models/ directory (default: False, delete it too)
+        keep_intermediate_data: If True, keep intermediate_data/ directory (default: False, delete it for fresh run)
     """
     project_path = Path(project_root)
     
@@ -25,6 +26,8 @@ def cleanup_runs_and_logs(project_root: str, keep_models: bool = False) -> None:
     dirs_to_clean = ["runs", "logs"]
     if not keep_models:
         dirs_to_clean.append("models")
+    if not keep_intermediate_data:
+        dirs_to_clean.append("intermediate_data")
     
     for dir_name in dirs_to_clean:
         dir_path = project_path / dir_name
@@ -37,11 +40,12 @@ def cleanup_runs_and_logs(project_root: str, keep_models: bool = False) -> None:
         else:
             logger.debug("Directory %s/ does not exist, skipping", dir_name)
     
-    # Recreate empty directories
+    # Recreate empty directories (except intermediate_data which will be created by pipeline)
     for dir_name in dirs_to_clean:
-        dir_path = project_path / dir_name
-        dir_path.mkdir(parents=True, exist_ok=True)
-        logger.debug("Created empty %s/ directory", dir_name)
+        if dir_name != "intermediate_data":  # Don't recreate intermediate_data, pipeline will create it
+            dir_path = project_path / dir_name
+            dir_path.mkdir(parents=True, exist_ok=True)
+            logger.debug("Created empty %s/ directory", dir_name)
 
 
 def cleanup_intermediate_files(project_root: str, keep_augmentations: bool = True) -> None:

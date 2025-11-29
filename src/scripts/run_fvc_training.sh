@@ -89,6 +89,11 @@ ln -snf "$WORK_DIR/runs" runs 2>/dev/null || true
 # Environment Variables for Performance
 # ============================================================================
 
+# Disable macOS-style malloc stack logging flags if they somehow leak into
+# this environment; on some systems they can cause noisy warnings.
+unset MallocStackLogging || true
+unset MallocStackLoggingNoCompact || true
+
 export PYTORCH_ALLOC_CONF="expandable_segments:true,max_split_size_mb:128"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
@@ -120,25 +125,93 @@ if [ "$PYTHON_VERSION" != "3.11" ] && [ "$PYTHON_VERSION" != "unknown" ]; then
 fi
 
 # ============================================================================
-# Verify Environment
+# Verify Environment and Prerequisites
 # ============================================================================
 
-log "Verifying Python environment..."
-if python -c "import sys; import papermill; print('✓ papermill available', flush=True)" 2>/dev/null; then
-    log "✓ papermill found"
-else
-    log "✗ ERROR: papermill not found. Install with: pip install papermill"
+log "Verifying Python environment and prerequisites..."
+
+# Check critical Python packages required for MLOps pipeline
+PREREQ_PACKAGES=(
+    "torch"
+    "torchvision"
+    "polars"
+    "numpy"
+    "pandas"
+    "scikit-learn"
+    "timm"
+    "opencv-python"
+    "av"
+    "tqdm"
+    "scipy"
+    "joblib"
+)
+
+MISSING_PACKAGES=()
+for pkg in "${PREREQ_PACKAGES[@]}"; do
+    # Handle package name variations (e.g., opencv-python -> cv2)
+    case "$pkg" in
+        "opencv-python")
+            if ! python -c "import cv2" 2>/dev/null; then
+                MISSING_PACKAGES+=("$pkg")
+            else
+                log "✓ $pkg (cv2) found"
+            fi
+            ;;
+        "scikit-learn")
+            if ! python -c "import sklearn" 2>/dev/null; then
+                MISSING_PACKAGES+=("$pkg")
+            else
+                log "✓ $pkg (sklearn) found"
+            fi
+            ;;
+        *)
+            if ! python -c "import $pkg" 2>/dev/null; then
+                MISSING_PACKAGES+=("$pkg")
+            else
+                log "✓ $pkg found"
+            fi
+            ;;
+    esac
+done
+
+if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
+    log "✗ ERROR: Missing required packages: ${MISSING_PACKAGES[*]}"
+    log "  Install with: pip install -r requirements.txt"
     exit 1
 fi
 
-# Check for ipykernel (required for papermill to execute notebooks)
+# Check for papermill and ipykernel (for notebook execution if needed)
+if python -c "import papermill" 2>/dev/null; then
+    log "✓ papermill found"
+else
+    log "⚠ WARNING: papermill not found (only needed for notebook execution)"
+fi
+
 if python -c "import ipykernel" 2>/dev/null; then
     log "✓ ipykernel found"
 else
-    log "✗ ERROR: ipykernel not found. Install with: pip install ipykernel"
-    log "  Or install all requirements: pip install -r requirements.txt"
-    exit 1
+    log "⚠ WARNING: ipykernel not found (only needed for notebook execution)"
 fi
+
+# Verify data files exist
+log "Verifying data files..."
+DATA_CSV="$ORIG_DIR/data/video_index_input.csv"
+if [ ! -f "$DATA_CSV" ]; then
+    log "✗ ERROR: Data CSV not found: $DATA_CSV"
+    log "  Run setup script first: python src/setup_fvc_dataset.py"
+    exit 1
+else
+    log "✓ Data CSV found: $DATA_CSV"
+fi
+
+# Check if videos directory exists
+if [ ! -d "$ORIG_DIR/videos" ]; then
+    log "⚠ WARNING: videos/ directory not found. Videos may not be accessible."
+else
+    log "✓ videos/ directory found"
+fi
+
+log "✅ All prerequisites verified"
 
 # ============================================================================
 # Jupyter Kernel Setup
@@ -201,43 +274,58 @@ if [ -n "${SLURM_TMPDIR:-}" ] && [ "$WORK_DIR" != "$ORIG_DIR" ]; then
 fi
 
 # ============================================================================
-# Cleanup Previous Instances
+# Cleanup Previous Instances (Fresh Run)
 # ============================================================================
 
-log "=== Cleaning Previous Runs ==="
+log "=== Cleaning Previous Runs for Fresh Start ==="
 # Kill any previous instances
 pkill -f "papermill.*fvc_binary_classifier" 2>/dev/null || true
 pkill -f "ipykernel.*fvc-binary-classifier" 2>/dev/null || true
 
-# Clear logs folder in ORIG_DIR (the actual logs directory)
+# Delete runs/, logs/, models/, and intermediate_data/ for completely fresh run
+# Preserve: archive/, data/video_index_input.csv, videos/
+log "Deleting runs/, logs/, models/, and intermediate_data/ directories..."
+
+if [ -d "$ORIG_DIR/runs" ]; then
+    rm -rf "$ORIG_DIR/runs"
+    log "✓ Deleted $ORIG_DIR/runs"
+fi
+
 if [ -d "$ORIG_DIR/logs" ]; then
-    # Count files before deletion for logging
-    DELETED_COUNT=$(find "$ORIG_DIR/logs" -type f \( -name "fvc_binary_classifier*" -o -name "*.log" \) 2>/dev/null | wc -l || echo "0")
-    # Delete all log files (including .out, .err, .log)
-    find "$ORIG_DIR/logs" -type f \( -name "fvc_binary_classifier*" -o -name "*.log" \) -delete 2>/dev/null || true
-    if [ "$DELETED_COUNT" -gt 0 ]; then
-        log "✓ Cleared $DELETED_COUNT log file(s) from: $ORIG_DIR/logs"
-    else
-        log "✓ Logs folder checked: $ORIG_DIR/logs (no matching files to delete)"
-    fi
+    rm -rf "$ORIG_DIR/logs"
+    log "✓ Deleted $ORIG_DIR/logs"
 fi
 
-# Also clear logs in WORK_DIR if different
-if [ "$WORK_DIR" != "$ORIG_DIR" ] && [ -d "$WORK_DIR/logs" ]; then
-    DELETED_COUNT=$(find "$WORK_DIR/logs" -type f \( -name "fvc_binary_classifier*" -o -name "*.log" \) 2>/dev/null | wc -l || echo "0")
-    find "$WORK_DIR/logs" -type f \( -name "fvc_binary_classifier*" -o -name "*.log" \) -delete 2>/dev/null || true
-    if [ "$DELETED_COUNT" -gt 0 ]; then
-        log "✓ Cleared $DELETED_COUNT log file(s) from: $WORK_DIR/logs"
-    fi
+if [ -d "$ORIG_DIR/models" ]; then
+    rm -rf "$ORIG_DIR/models"
+    log "✓ Deleted $ORIG_DIR/models"
 fi
 
-# Clean up runs folder (keep directory structure)
-if [ -d "$WORK_DIR/runs" ]; then
-    find "$WORK_DIR/runs" -type f -name "fvc_binary_classifier_executed_*.ipynb" -mtime +7 -delete 2>/dev/null || true
-    log "✓ Cleaned old executed notebooks from runs folder"
+if [ -d "$ORIG_DIR/intermediate_data" ]; then
+    rm -rf "$ORIG_DIR/intermediate_data"
+    log "✓ Deleted $ORIG_DIR/intermediate_data"
 fi
+
+# Recreate empty directories
+mkdir -p "$ORIG_DIR/runs" "$ORIG_DIR/logs" "$ORIG_DIR/models"
+log "✓ Created fresh runs/, logs/, models/ directories"
+
+# Also clean WORK_DIR if different
+if [ "$WORK_DIR" != "$ORIG_DIR" ]; then
+    if [ -d "$WORK_DIR/runs" ]; then
+        rm -rf "$WORK_DIR/runs"
+    fi
+    if [ -d "$WORK_DIR/logs" ]; then
+        rm -rf "$WORK_DIR/logs"
+    fi
+    if [ -d "$WORK_DIR/intermediate_data" ]; then
+        rm -rf "$WORK_DIR/intermediate_data"
+    fi
+    mkdir -p "$WORK_DIR/runs" "$WORK_DIR/logs"
+fi
+
 sleep 2
-log "✓ Cleanup completed"
+log "✓ Fresh cleanup completed"
 
 # ============================================================================
 # Notebook Execution (or MLOps Pipeline)
@@ -250,6 +338,15 @@ USE_MLOPS_PIPELINE="${USE_MLOPS_PIPELINE:-true}"
 if [ "$USE_MLOPS_PIPELINE" = "true" ]; then
     log "Using MLOps pipeline (run_mlops_pipeline.py)"
     log "Features: K-fold CV, aggressive GC, OOM handling, per-stage checkpointing"
+    log "Pipeline order:"
+    log "  1. Load data (with duplicate videos from FVC_dup.csv)"
+    log "  2. Download/verify pretrained models (prerequisite)"
+    log "  3. Create balanced k-fold splits (stratified, class-balanced)"
+    log "  4. Generate shared augmentations (BEFORE models, cached globally)"
+    log "  5. Train all models sequentially (with shared data/augmentations)"
+    log ""
+    log "Note: Augmentations are generated ONCE and reused across all models and runs"
+    log "      (cached in intermediate_data/augmented_clips/shared/)"
     
     PIPELINE_START=$(date +%s)
     LOG_FILE="$WORK_DIR/logs/fvc_binary_classifier_run.log"

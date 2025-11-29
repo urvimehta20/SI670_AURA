@@ -233,8 +233,10 @@ def train_one_epoch(
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info("Model: %d total params, %d trainable", total_params, trainable_params)
 
-    # For binary classification with logits: BCEWithLogitsLoss
-    # Infer number of classes from first batch
+    # Loss criterion will be inferred on the first batch based on BOTH
+    # label distribution and model output shape:
+    # - If logits are 1D: binary BCEWithLogitsLoss
+    # - If logits are 2D with C>1: multi-class CrossEntropyLoss
     first_batch = True
     criterion: Optional[nn.Module] = None
 
@@ -262,50 +264,6 @@ def train_one_epoch(
                 torch.cuda.empty_cache()
         clips = clips.to(device)
         labels = labels.to(device)
-
-        # Derive criterion once
-        if first_batch:
-            num_classes = int(labels.max().item() + 1)
-            if num_classes == 2:
-                # Map labels {0,1} to float targets for BCE
-                targets = labels.float()
-                if use_class_weights:
-                    # pos_weight is ratio of negative to positive examples
-                    pos_count = (labels == 1).sum().float()
-                    neg_count = (labels == 0).sum().float()
-                    if pos_count == 0:
-                        pos_weight = torch.tensor(1.0, device=device)
-                        logger.warning(
-                            "⚠ First batch has no positive samples! pos_weight set to 1.0. "
-                            "This may cause training issues. Check data distribution."
-                        )
-                    elif neg_count == 0:
-                        pos_weight = torch.tensor(1.0, device=device)
-                        logger.warning(
-                            "⚠ First batch has no negative samples! pos_weight set to 1.0. "
-                            "This may cause training issues. Check data distribution."
-                        )
-                    else:
-                        # Add small epsilon to guard against numerical issues
-                        pos_weight = neg_count / (pos_count + 1e-6)
-                    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-                    logger.info("BCEWithLogitsLoss with pos_weight=%.3f (pos=%d, neg=%d)", 
-                               pos_weight.item(), int(pos_count.item()), int(neg_count.item()))
-                else:
-                    criterion = nn.BCEWithLogitsLoss()
-                    logger.info("BCEWithLogitsLoss (no class weights)")
-            else:
-                if use_class_weights:
-                    with torch.no_grad():
-                        # Compute counts over single batch as an approximation
-                        counts = torch.zeros(num_classes, device=device)
-                        for c in labels.view(-1):
-                            counts[c] += 1
-                        class_weights = make_class_weights(counts.cpu()).to(device)
-                    criterion = nn.CrossEntropyLoss(weight=class_weights)
-                else:
-                    criterion = nn.CrossEntropyLoss()
-            first_batch = False
 
         # Only zero gradients at the start of accumulation cycle
         if batch_idx % gradient_accumulation_steps == 0:
@@ -340,15 +298,74 @@ def train_one_epoch(
         if use_new_autocast is True:
             # New API
             with torch.amp.autocast('cuda'):
-                logits = model(clips).squeeze(-1)
+                logits = model(clips)
         elif use_new_autocast is False:
             # Old API
             with torch.cuda.amp.autocast():
-                logits = model(clips).squeeze(-1)
+                logits = model(clips)
         else:
             # No AMP
-            logits = model(clips).squeeze(-1)
-        
+            logits = model(clips)
+
+        # Derive criterion once, after seeing logits shape
+        if first_batch:
+            if logits.ndim == 1 or (logits.ndim == 2 and logits.shape[1] == 1):
+                # Binary classification with scalar logits → BCEWithLogitsLoss
+                if logits.ndim == 2:
+                    logits = logits.squeeze(-1)
+                if use_class_weights:
+                    # pos_weight is ratio of negative to positive examples
+                    pos_count = (labels == 1).sum().float()
+                    neg_count = (labels == 0).sum().float()
+                    if pos_count == 0 or neg_count == 0:
+                        pos_weight = torch.tensor(1.0, device=device)
+                        logger.warning(
+                            "⚠ First batch has only one class (pos=%d, neg=%d). "
+                            "pos_weight set to 1.0. This may cause training issues.",
+                            int(pos_count.item()),
+                            int(neg_count.item()),
+                        )
+                    else:
+                        pos_weight = neg_count / (pos_count + 1e-6)
+                    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+                    logger.info(
+                        "BCEWithLogitsLoss with pos_weight=%.3f (pos=%d, neg=%d)",
+                        pos_weight.item(),
+                        int(pos_count.item()),
+                        int(neg_count.item()),
+                    )
+                else:
+                    criterion = nn.BCEWithLogitsLoss()
+                    logger.info("BCEWithLogitsLoss (no class weights)")
+            else:
+                # Multi-class (including 2-logit case like naive_cnn)
+                num_classes = logits.shape[1] if logits.ndim > 1 else int(labels.max().item() + 1)
+                if use_class_weights:
+                    with torch.no_grad():
+                        # Compute counts over single batch as an approximation
+                        counts = torch.zeros(num_classes, device=device)
+                        for c in labels.view(-1):
+                            counts[c] += 1
+                        class_weights = make_class_weights(counts.cpu()).to(device)
+                    criterion = nn.CrossEntropyLoss(weight=class_weights)
+                    logger.info(
+                        "CrossEntropyLoss with class weights: %s",
+                        class_weights.cpu().tolist(),
+                    )
+                else:
+                    criterion = nn.CrossEntropyLoss()
+                    logger.info("CrossEntropyLoss (no class weights)")
+            first_batch = False
+
+        # If using BCE, ensure logits are 1D; if using CE, ensure 2D
+        if isinstance(criterion, nn.BCEWithLogitsLoss):
+            if logits.ndim == 2 and logits.shape[1] == 1:
+                logits = logits.squeeze(-1)
+        else:
+            # CrossEntropyLoss expects (N, C)
+            if logits.ndim == 1:
+                logits = logits.unsqueeze(-1)
+
         # Compute loss (same for all cases)
         # Initialize unscaled_loss_value for all code paths
         unscaled_loss_value = 0.0
@@ -452,19 +469,19 @@ def train_one_epoch(
                     scaler.update()
                 else:
                     optimizer.step()
+                
+                # Ultra aggressive GC after optimizer step to free memory immediately
+                from .mlops_utils import aggressive_gc
+                aggressive_gc(clear_cuda=device.startswith("cuda"))
         except RuntimeError as e:
             error_str = str(e).lower()
             if any(oom_indicator in error_str for oom_indicator in 
                    ["out of memory", "cuda out of memory", "oom", "allocation failed"]):
-                logger.error("CUDA OOM at batch %d. Performing aggressive cleanup...", batch_idx + 1)
+                logger.error("CUDA OOM at batch %d. Performing ultra aggressive cleanup...", batch_idx + 1)
                 
-                # VERY aggressive cleanup
-                import gc
-                for _ in range(3):
-                    gc.collect()
-                if device.startswith("cuda"):
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
+                # Use ultra aggressive GC from mlops_utils
+                from .mlops_utils import aggressive_gc
+                aggressive_gc(clear_cuda=True)
                 
                 # Log memory stats
                 if torch.cuda.is_available():
@@ -652,42 +669,69 @@ def evaluate(
     total_loss = 0.0
     total_correct = 0
     total_samples = 0
-
-    criterion = nn.BCEWithLogitsLoss()
-
+    
+    criterion: Optional[nn.Module] = None
+    first_batch = True
+    
     for clips, labels in loader:
         clips = clips.to(device)
         labels = labels.to(device)
-
+    
         # Use autocast for mixed precision (optimized: check once, reuse)
         if device.startswith("cuda"):
             try:
                 # New API (PyTorch 2.0+)
                 with torch.amp.autocast('cuda'):
-                    logits = model(clips).squeeze(-1)
+                    logits = model(clips)
             except (AttributeError, TypeError):
                 # Fallback to old API
                 with torch.cuda.amp.autocast():
-                    logits = model(clips).squeeze(-1)
+                    logits = model(clips)
         else:
-            logits = model(clips).squeeze(-1)
-        targets = labels.float()
-        loss = criterion(logits, targets)
+            logits = model(clips)
 
-        preds = (logits.sigmoid() >= 0.5).long()
+        # Infer criterion on first batch, mirroring train_one_epoch logic
+        if first_batch:
+            if logits.ndim == 1 or (logits.ndim == 2 and logits.shape[1] == 1):
+                # Binary case
+                if logits.ndim == 2:
+                    logits = logits.squeeze(-1)
+                criterion = nn.BCEWithLogitsLoss()
+            else:
+                # Multi-class (including 2-logit case)
+                criterion = nn.CrossEntropyLoss()
+            first_batch = False
+
+        if isinstance(criterion, nn.BCEWithLogitsLoss):
+            if logits.ndim == 2 and logits.shape[1] == 1:
+                logits = logits.squeeze(-1)
+            targets = labels.float()
+            loss = criterion(logits, targets)
+            preds = (logits.sigmoid() >= 0.5).long()
+        else:
+            # CrossEntropyLoss expects (N, C)
+            if logits.ndim == 1:
+                logits = logits.unsqueeze(-1)
+            loss = criterion(logits, labels)  # type: ignore[arg-type]
+            preds = logits.argmax(dim=1)
+    
         total_correct += int((preds == labels).sum().item())
         total_samples += int(labels.numel())
         total_loss += float(loss.item())
         
         # Clear intermediate tensors to save memory
-        del logits, preds, loss, targets
-        if device.startswith("cuda"):
-            # Clear cache periodically during evaluation
-            if total_samples % 10 == 0:
-                torch.cuda.empty_cache()
-
+        del logits, preds, loss, clips, labels
+        
+        # Ultra aggressive GC after every evaluation batch
+        from .mlops_utils import aggressive_gc
+        aggressive_gc(clear_cuda=device.startswith("cuda"))
+    
     avg_loss = total_loss / max(1, len(loader))
     acc = total_correct / max(1, total_samples)
+    
+    # Final aggressive GC after evaluation completes
+    aggressive_gc(clear_cuda=device.startswith("cuda"))
+    
     return avg_loss, acc
 
 
@@ -771,6 +815,11 @@ def fit(
             else:
                 raise
 
+        # Step scheduler at the end of the epoch (AFTER optimizer.step() calls in train_one_epoch)
+        # This ensures scheduler.step() is called after optimizer.step() in the same epoch
+        if train_loss is not None:
+            scheduler.step()
+
         if val_loader is not None:
             val_loss, val_acc = evaluate(model, val_loader, device=device)
             logger.info(
@@ -801,8 +850,6 @@ def fit(
                 train_cfg.num_epochs,
                 train_loss,
             )
-
-        scheduler.step()
 
     if best_state is not None:
         model.load_state_dict(best_state)

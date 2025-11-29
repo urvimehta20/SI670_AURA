@@ -17,7 +17,7 @@ def run_default_prep():
     
     build_video_index(
         cfg,
-        drop_duplicates=True,
+        drop_duplicates=False,  # Keep all duplicate videos (grouped by dup_group for split awareness)
         compute_stats=True  # compute comprehensive video stats using ffprobe
     )
 
