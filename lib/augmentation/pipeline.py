@@ -165,7 +165,19 @@ def stage1_augment_videos(
             log_memory_stats(f"Stage 1: before video {idx + 1}")
             
             # Save original video metadata
-            video_id = Path(video_path).stem
+            # Extract unique ID from video path (e.g., "IJfOsFABDwY" from "FVC1/youtube/IJfOsFABDwY/video.mp4")
+            video_path_obj = Path(video_path)
+            video_path_parts = video_path_obj.parts
+            
+            # Get unique identifier from parent directory or use hash
+            if len(video_path_parts) >= 2:
+                # Parent directory is usually the unique ID (e.g., "IJfOsFABDwY")
+                video_id = video_path_parts[-2]  # Parent of "video.mp4"
+            else:
+                # Fallback: use hash of full path
+                import hashlib
+                video_id = hashlib.md5(str(video_path).encode()).hexdigest()[:12]
+            
             video_id = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in video_id)
             
             original_output = output_dir / f"{video_id}_original.mp4"
@@ -208,11 +220,18 @@ def stage1_augment_videos(
                 continue
             
             # Save augmented videos
+            logger.info(f"Generated {len(augmented_videos)} augmentations, saving...")
             for aug_idx, aug_frames in enumerate(augmented_videos):
                 aug_filename = f"{video_id}_aug{aug_idx}.mp4"
                 aug_path = output_dir / aug_filename
                 
-                logger.info(f"Saving augmentation {aug_idx + 1} to {aug_path}")
+                logger.info(f"Saving augmentation {aug_idx + 1}/{len(augmented_videos)} to {aug_path}")
+                
+                # Validate frames
+                if not aug_frames or len(aug_frames) == 0:
+                    logger.error(f"✗ Augmentation {aug_idx + 1} has no frames, skipping")
+                    continue
+                
                 success = save_frames(aug_frames, str(aug_path), fps=fps)
                 
                 if success:
@@ -230,7 +249,7 @@ def stage1_augment_videos(
                     total_videos_processed += 1
                     logger.info(f"✓ Saved: {aug_path}")
                 else:
-                    logger.error(f"✗ Failed to save: {aug_path}")
+                    logger.error(f"✗ Failed to save: {aug_path} - save_frames returned False")
                 
                 # Clear frames immediately
                 del aug_frames
