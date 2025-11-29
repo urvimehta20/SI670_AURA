@@ -209,7 +209,7 @@ def verify_paths_and_attributes():
         # Import centralized path utilities
         sys.path.insert(0, str(PROJECT_ROOT))
         try:
-            from lib.video_paths import check_video_path_exists, get_video_path_candidates
+            from lib.video_paths import resolve_video_path
         except ImportError:
             # Fallback if module not available
             def check_video_path_exists(video_rel, project_root):
@@ -239,9 +239,12 @@ def verify_paths_and_attributes():
         missing_videos = []
         for idx, row in df.iterrows():
             video_rel = row["video_path"]
-            if not check_video_path_exists(video_rel, str(PROJECT_ROOT)):
-                candidates = get_video_path_candidates(video_rel, str(PROJECT_ROOT))
-                missing_videos.append((row["video_id"], candidates[0] if candidates else str(PROJECT_ROOT / video_rel)))
+            try:
+                video_path = resolve_video_path(video_rel, str(PROJECT_ROOT))
+                if not Path(video_path).exists():
+                    missing_videos.append((row["video_id"], video_path))
+            except Exception:
+                missing_videos.append((row["video_id"], str(PROJECT_ROOT / video_rel)))
         
         if missing_videos:
             print(f"✗ Warning: {len(missing_videos)} video files not found:")

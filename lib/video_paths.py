@@ -60,7 +60,7 @@ def resolve_video_path(video_rel: str, project_root: str) -> str:
     return str(project_root / video_rel)
 
 
-def check_video_path_exists(video_rel: str, project_root: str) -> bool:
+def _check_video_path_exists(video_rel: str, project_root: str) -> bool:
     """
     Check if a video path exists using the same resolution logic.
     
@@ -104,7 +104,7 @@ def check_video_path_exists(video_rel: str, project_root: str) -> bool:
     return False
 
 
-def get_video_path_candidates(video_rel: str, project_root: str) -> List[str]:
+def _get_video_path_candidates(video_rel: str, project_root: str) -> List[str]:
     """
     Get all candidate paths that would be tried for a video.
     

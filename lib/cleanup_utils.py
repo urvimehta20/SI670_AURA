@@ -48,7 +48,7 @@ def cleanup_runs_and_logs(project_root: str, keep_models: bool = False, keep_int
             logger.debug("Created empty %s/ directory", dir_name)
 
 
-def cleanup_intermediate_files(project_root: str, keep_augmentations: bool = True) -> None:
+def _cleanup_intermediate_files(project_root: str, keep_augmentations: bool = True) -> None:
     """
     Clean up intermediate files (augmentations, splits, etc.).
     

@@ -35,8 +35,6 @@ from .video_data import (
     maybe_limit_to_small_test_subset,
 )
 from .video_modeling import VideoConfig, VideoDataset, variable_ar_collate
-from pathlib import Path
-
 from .video_augmentation_pipeline import pregenerate_augmented_dataset
 from .video_training import OptimConfig, TrainConfig, fit
 from .video_modeling import PretrainedInceptionVideoModel
