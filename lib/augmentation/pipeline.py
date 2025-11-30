@@ -121,7 +121,8 @@ def augment_video(
 def stage1_augment_videos(
     project_root: str,
     num_augmentations: int = 10,
-    output_dir: str = "data/augmented_videos"
+    output_dir: str = "data/augmented_videos",
+    delete_existing: bool = False
 ) -> pl.DataFrame:
     """
     Stage 1: Augment all videos.
@@ -130,6 +131,7 @@ def stage1_augment_videos(
         project_root: Project root directory
         num_augmentations: Number of augmentations per video (default: 10)
         output_dir: Directory to save augmented videos
+        delete_existing: If True, delete existing augmentations before regenerating (default: False)
     
     Returns:
         DataFrame with metadata for all videos (original + augmented)
@@ -160,12 +162,52 @@ def stage1_augment_videos(
     logger.info(f"Stage 1: Found {df.height} original videos")
     logger.info(f"Stage 1: Generating {num_augmentations} augmentation(s) per video")
     logger.info(f"Stage 1: Output directory: {output_dir}")
+    logger.info(f"Stage 1: Delete existing augmentations: {delete_existing}")
     
     # Use incremental CSV writing to avoid memory accumulation
     metadata_path = output_dir / "augmented_metadata.csv"
-    with open(metadata_path, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(["video_path", "label", "original_video", "augmentation_idx", "is_original"])
+    
+    # Load existing metadata if it exists and we're not deleting
+    existing_metadata = None
+    existing_video_ids = set()
+    if metadata_path.exists() and not delete_existing:
+        try:
+            existing_metadata = pl.read_csv(str(metadata_path))
+            # Extract video IDs that already have all augmentations
+            for row in existing_metadata.iter_rows(named=True):
+                original_video = row.get("original_video", "")
+                aug_idx = row.get("augmentation_idx", -1)
+                if aug_idx >= 0:  # This is an augmentation
+                    # Extract video_id from original_video path
+                    video_path_obj = Path(original_video)
+                    if len(video_path_obj.parts) >= 2:
+                        video_id = video_path_obj.parts[-2]
+                        video_id = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in video_id)
+                        existing_video_ids.add(video_id)
+            logger.info(f"Stage 1: Found {len(existing_video_ids)} videos with existing augmentations")
+        except Exception as e:
+            logger.warning(f"Could not load existing metadata: {e}, will regenerate")
+            existing_metadata = None
+    
+    # If deleting existing, remove all augmented files
+    if delete_existing:
+        logger.info("Stage 1: Deleting existing augmentations...")
+        if metadata_path.exists():
+            metadata_path.unlink()
+            logger.info(f"Deleted existing metadata: {metadata_path}")
+        
+        # Delete all augmented video files (keep original videos)
+        for aug_file in output_dir.glob("*_aug*.mp4"):
+            aug_file.unlink()
+            logger.debug(f"Deleted existing augmentation: {aug_file}")
+        logger.info("Stage 1: Deleted all existing augmentations")
+    
+    # Open metadata file for writing (append if resuming, write if new)
+    mode = 'a' if metadata_path.exists() and not delete_existing else 'w'
+    if mode == 'w':
+        with open(metadata_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["video_path", "label", "original_video", "augmentation_idx", "is_original"])
     
     total_videos_processed = 0
     
@@ -204,22 +246,50 @@ def stage1_augment_videos(
             
             video_id = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in video_id)
             
+            # Check if this video already has all augmentations
+            if video_id in existing_video_ids and not delete_existing:
+                # Check if all augmentations exist
+                all_augmentations_exist = True
+                for aug_idx in range(num_augmentations):
+                    aug_path = output_dir / f"{video_id}_aug{aug_idx}.mp4"
+                    if not aug_path.exists():
+                        all_augmentations_exist = False
+                        break
+                
+                if all_augmentations_exist:
+                    logger.info(f"Video {video_id} already has all {num_augmentations} augmentations, skipping...")
+                    # Still write metadata if not already in existing metadata
+                    if existing_metadata is None or video_id not in existing_video_ids:
+                        original_output = output_dir / f"{video_id}_original.mp4"
+                        if original_output.exists():
+                            with open(metadata_path, 'a', newline='') as f:
+                                writer = csv.writer(f)
+                                writer.writerow([
+                                    str(original_output.relative_to(project_root)),
+                                    label,
+                                    video_rel,
+                                    -1,  # -1 indicates original
+                                    True
+                                ])
+                    continue
+            
             original_output = output_dir / f"{video_id}_original.mp4"
             if not original_output.exists():
                 import shutil
                 shutil.copy2(video_path, original_output)
             
-            # Write original video metadata immediately to CSV
-            with open(metadata_path, 'a', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    str(original_output.relative_to(project_root)),
-                    label,
-                    video_rel,
-                    -1,  # -1 indicates original
-                    True
-                ])
-            total_videos_processed += 1
+            # Write original video metadata immediately to CSV (only if not already exists)
+            if not (existing_metadata is not None and video_id in existing_video_ids):
+                with open(metadata_path, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        str(original_output.relative_to(project_root)),
+                        label,
+                        video_rel,
+                        -1,  # -1 indicates original
+                        True
+                    ])
+                total_videos_processed += 1
             
             # Generate augmentations with frame limit
             max_frames_per_video = 1000
@@ -248,6 +318,22 @@ def stage1_augment_videos(
             for aug_idx, aug_frames in enumerate(augmented_videos):
                 aug_filename = f"{video_id}_aug{aug_idx}.mp4"
                 aug_path = output_dir / aug_filename
+                
+                # Skip if augmentation already exists and we're not deleting
+                if aug_path.exists() and not delete_existing:
+                    logger.info(f"Augmentation {aug_idx + 1}/{len(augmented_videos)} already exists: {aug_path}, skipping...")
+                    # Still write metadata if needed
+                    aug_path_rel = str(aug_path.relative_to(project_root))
+                    with open(metadata_path, 'a', newline='') as f:
+                        writer = csv.writer(f)
+                        writer.writerow([
+                            aug_path_rel,
+                            label,
+                            video_rel,
+                            aug_idx,
+                            False
+                        ])
+                    continue
                 
                 logger.info(f"Saving augmentation {aug_idx + 1}/{len(augmented_videos)} to {aug_path}")
                 

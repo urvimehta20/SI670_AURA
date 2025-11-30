@@ -82,6 +82,11 @@ Examples:
         action="store_true",
         help="Resume from existing augmented metadata (skip already processed videos)"
     )
+    parser.add_argument(
+        "--delete-existing",
+        action="store_true",
+        help="Delete existing augmentations before regenerating (default: False, preserves existing)"
+    )
     
     args = parser.parse_args()
     
@@ -109,6 +114,7 @@ Examples:
     logger.info("Output directory: %s", output_dir)
     logger.info("Number of augmentations per video: %d", args.num_augmentations)
     logger.info("Resume mode: %s", "Enabled" if args.resume else "Disabled")
+    logger.info("Delete existing augmentations: %s", "Yes" if args.delete_existing else "No (preserved)")
     logger.info("Log file: %s", log_file)
     logger.debug("Python version: %s", sys.version)
     logger.debug("Python executable: %s", sys.executable)
@@ -174,7 +180,8 @@ Examples:
         result_df = stage1_augment_videos(
             project_root=str(project_root),
             num_augmentations=args.num_augmentations,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            delete_existing=args.delete_existing
         )
         
         stage_duration = time.time() - stage_start
