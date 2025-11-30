@@ -242,6 +242,10 @@ Examples:
         logger.info("  - Or continue with full pipeline: python src/run_new_pipeline.py --skip-stage 1")
         logger.info("=" * 80)
         
+        # Ensure all logs are flushed before exit
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         return 0
         
     except KeyboardInterrupt:
@@ -266,5 +270,9 @@ Examples:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    exit_code = main()
+    # Ensure all output is flushed before exit
+    sys.stdout.flush()
+    sys.stderr.flush()
+    sys.exit(exit_code)
 

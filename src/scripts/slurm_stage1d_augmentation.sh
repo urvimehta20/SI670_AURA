@@ -233,6 +233,24 @@ log "Number of augmentations per video: $NUM_AUGMENTATIONS"
 OUTPUT_DIR="${FVC_STAGE1_OUTPUT_DIR:-data/augmented_videos}"
 log "Output directory: $OUTPUT_DIR"
 
+# CRITICAL: Protect output directory from deletion
+# Never delete the entire output directory - only individual files within it
+OUTPUT_DIR_FULL="$ORIG_DIR/$OUTPUT_DIR"
+if [ -d "$OUTPUT_DIR_FULL" ]; then
+    log "✓ Output directory exists: $OUTPUT_DIR_FULL"
+    # Ensure directory is not empty (safety check)
+    if [ ! -w "$OUTPUT_DIR_FULL" ]; then
+        log "✗ ERROR: Output directory is not writable: $OUTPUT_DIR_FULL"
+        exit 1
+    fi
+else
+    log "Creating output directory: $OUTPUT_DIR_FULL"
+    mkdir -p "$OUTPUT_DIR_FULL" || {
+        log "✗ ERROR: Failed to create output directory: $OUTPUT_DIR_FULL"
+        exit 1
+    }
+fi
+
 # Get delete-existing flag from environment (default: 1 for parallel jobs to avoid conflicts)
 DELETE_EXISTING="${FVC_DELETE_EXISTING:-1}"
 if [ "$DELETE_EXISTING" = "1" ] || [ "$DELETE_EXISTING" = "true" ] || [ "$DELETE_EXISTING" = "yes" ]; then

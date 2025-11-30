@@ -118,6 +118,145 @@ def augment_video(
     return augmented_videos
 
 
+def _reconstruct_metadata_from_files(
+    metadata_path: Path,
+    output_dir: Path,
+    project_root: Path,
+    df: pl.DataFrame,
+    num_augmentations: int
+) -> None:
+    """
+    Reconstruct metadata CSV from existing augmentation files in the output directory.
+    
+    Scans for all *_aug*.mp4 and *_original.mp4 files and creates metadata entries.
+    This function loads the full original metadata to match video_ids correctly.
+    """
+    logger.info("Reconstructing metadata from existing augmentation files...")
+    
+    # Load full original metadata (not just the filtered df) to match all video_ids
+    input_metadata_path = None
+    for csv_name in ["FVC_dup.csv", "video_index_input.csv"]:
+        candidate_path = project_root / "data" / csv_name
+        if candidate_path.exists():
+            input_metadata_path = candidate_path
+            break
+    
+    if input_metadata_path is None:
+        logger.error("Cannot reconstruct metadata: original metadata file not found")
+        return
+    
+    try:
+        full_df = load_metadata(str(input_metadata_path))
+    except Exception as e:
+        logger.error(f"Cannot reconstruct metadata: failed to load original metadata: {e}")
+        return
+    
+    # Create a mapping from video_id to original video path and label
+    # Check all videos in the full dataset, not just the filtered range
+    video_id_to_info = {}
+    for row in full_df.iter_rows(named=True):
+        video_rel = row["video_path"]
+        label = row["label"]
+        try:
+            video_path = resolve_video_path(video_rel, project_root)
+            if Path(video_path).exists():
+                video_path_obj = Path(video_path)
+                video_path_parts = video_path_obj.parts
+                if len(video_path_parts) >= 2:
+                    video_id = video_path_parts[-2]
+                    video_id = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in video_id)
+                    video_id_to_info[video_id] = {
+                        'original_video': video_rel,
+                        'label': label
+                    }
+        except Exception:
+            continue
+    
+    # Scan for all augmentation and original files in the output directory
+    entries = []
+    
+    # Find all *_aug*.mp4 files
+    for aug_file in output_dir.glob("*_aug*.mp4"):
+        aug_filename = aug_file.stem  # Remove .mp4 extension
+        if "_aug" in aug_filename:
+            video_id = aug_filename.split("_aug")[0]
+            aug_idx_str = aug_filename.split("_aug")[1]
+            try:
+                aug_idx = int(aug_idx_str)
+            except ValueError:
+                continue
+            
+            if video_id in video_id_to_info:
+                info = video_id_to_info[video_id]
+                aug_path_rel = str(aug_file.relative_to(project_root))
+                entries.append({
+                    'video_path': aug_path_rel,
+                    'label': info['label'],
+                    'original_video': info['original_video'],
+                    'augmentation_idx': aug_idx,
+                    'is_original': False
+                })
+    
+    # Find all *_original.mp4 files
+    for orig_file in output_dir.glob("*_original.mp4"):
+        orig_filename = orig_file.stem  # Remove .mp4 extension
+        if orig_filename.endswith("_original"):
+            video_id = orig_filename[:-9]  # Remove "_original" suffix
+            
+            if video_id in video_id_to_info:
+                info = video_id_to_info[video_id]
+                orig_path_rel = str(orig_file.relative_to(project_root))
+                entries.append({
+                    'video_path': orig_path_rel,
+                    'label': info['label'],
+                    'original_video': info['original_video'],
+                    'augmentation_idx': -1,  # -1 for original videos
+                    'is_original': True
+                })
+    
+    # Write metadata CSV (append if file exists, write if new)
+    mode = 'a' if metadata_path.exists() else 'w'
+    if mode == 'w':
+        with open(metadata_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["video_path", "label", "original_video", "augmentation_idx", "is_original"])
+    
+    # Append entries (avoid duplicates by checking existing entries if appending)
+    existing_entries = set()
+    if mode == 'a' and metadata_path.exists():
+        try:
+            existing_df = pl.read_csv(str(metadata_path))
+            for row in existing_df.iter_rows(named=True):
+                existing_entries.add((
+                    row.get('video_path', ''),
+                    row.get('original_video', ''),
+                    row.get('augmentation_idx', -999)
+                ))
+        except Exception:
+            pass
+    
+    new_entries = []
+    with open(metadata_path, mode, newline='') as f:
+        writer = csv.writer(f)
+        for entry in entries:
+            entry_key = (entry['video_path'], entry['original_video'], entry['augmentation_idx'])
+            if entry_key not in existing_entries:
+                writer.writerow([
+                    entry['video_path'],
+                    entry['label'],
+                    entry['original_video'],
+                    entry['augmentation_idx'],
+                    entry['is_original']
+                ])
+                new_entries.append(entry)
+                existing_entries.add(entry_key)
+    
+    if new_entries:
+        logger.info(f"✓ Reconstructed metadata: Added {len(new_entries)} new entries (total {len(entries)} found)")
+    else:
+        logger.info(f"✓ Metadata reconstruction: All {len(entries)} entries already exist in metadata")
+
+
 def stage1_augment_videos(
     project_root: str,
     num_augmentations: int = 10,
@@ -291,8 +430,9 @@ def stage1_augment_videos(
         
         logger.info("Stage 1: Range-specific cleanup complete")
     
-    # Open metadata file for writing (append if resuming, write if new)
-    mode = 'a' if metadata_path.exists() and not delete_existing else 'w'
+    # Open metadata file for writing (append if file exists, write if new)
+    # Always append if file exists to preserve entries from other ranges, even when delete_existing=True
+    mode = 'a' if metadata_path.exists() else 'w'
     if mode == 'w':
         with open(metadata_path, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -353,6 +493,8 @@ def stage1_augment_videos(
             original_output = output_dir / f"{video_id}_original.mp4"
             if not original_output.exists():
                 import shutil
+                # Ensure output directory exists before copying
+                original_output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(video_path, original_output)
             
             # Write original video metadata immediately to CSV (only if not already exists in metadata)
@@ -469,17 +611,45 @@ def stage1_augment_videos(
             logger.error(f"Error processing video {video_rel}: {e}", exc_info=True)
             continue
     
+    # Reconstruct metadata from existing files if needed
+    # This ensures that if all augmentations already exist and were skipped,
+    # or if the metadata file is missing/corrupted, we rebuild it from the files
+    needs_reconstruction = False
+    if not metadata_path.exists():
+        needs_reconstruction = True
+        logger.info("Stage 1: Metadata file missing, reconstructing from existing augmentation files...")
+    elif metadata_path.exists() and metadata_path.stat().st_size == 0:
+        needs_reconstruction = True
+        logger.info("Stage 1: Metadata file is empty, reconstructing from existing augmentation files...")
+    else:
+        # Check if metadata is incomplete (has fewer entries than expected files)
+        try:
+            existing_metadata_df = pl.read_csv(str(metadata_path))
+            # Count expected files: original + augmentations for each video in range
+            expected_entries = df.height * (1 + num_augmentations)  # 1 original + num_augmentations per video
+            if existing_metadata_df.height < expected_entries * 0.5:  # If less than 50% of expected
+                needs_reconstruction = True
+                logger.info(f"Stage 1: Metadata appears incomplete ({existing_metadata_df.height} entries, expected ~{expected_entries}), reconstructing...")
+        except Exception:
+            needs_reconstruction = True
+            logger.info("Stage 1: Could not read metadata file, reconstructing from existing augmentation files...")
+    
+    if needs_reconstruction:
+        _reconstruct_metadata_from_files(metadata_path, output_dir, project_root, df, num_augmentations)
+    
     # Load final metadata from CSV
-    if metadata_path.exists() and total_videos_processed > 0:
+    if metadata_path.exists():
         try:
             metadata_df = pl.read_csv(str(metadata_path))
-            logger.info(f"\n✓ Stage 1 complete: Saved metadata to {metadata_path}")
-            logger.info(f"✓ Stage 1: Generated {total_videos_processed} total videos ({df.height} original + {total_videos_processed - df.height} augmented)")
+            logger.info(f"\n✓ Stage 1 complete: Metadata available at {metadata_path}")
+            logger.info(f"✓ Stage 1: Total entries in metadata: {metadata_df.height}")
+            if total_videos_processed > 0:
+                logger.info(f"✓ Stage 1: Processed {total_videos_processed} videos in this run")
             return metadata_df
         except Exception as e:
             logger.error(f"Failed to read metadata CSV: {e}")
             return pl.DataFrame()
     else:
-        logger.error("Stage 1: No videos processed!")
+        logger.error("Stage 1: No metadata file found and could not reconstruct!")
         return pl.DataFrame()
 
