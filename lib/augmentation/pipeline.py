@@ -289,40 +289,7 @@ def stage1_augment_videos(
             except Exception as e:
                 logger.warning(f"Could not update metadata file: {e}, will regenerate entries")
         
-        # Delete log files
-        log_dir = project_root / "logs"
-        if log_dir.exists():
-            log_files_deleted = 0
-            for log_file in log_dir.glob("stage1*_aug*.log"):
-                log_file.unlink()
-                log_files_deleted += 1
-                logger.debug(f"Deleted log file: {log_file}")
-            for log_file in log_dir.glob("stage1*_aug*.out"):
-                log_file.unlink()
-                log_files_deleted += 1
-                logger.debug(f"Deleted output file: {log_file}")
-            for log_file in log_dir.glob("stage1*_aug*.err"):
-                log_file.unlink()
-                log_files_deleted += 1
-                logger.debug(f"Deleted error file: {log_file}")
-            logger.info(f"Stage 1: Deleted {log_files_deleted} log/run files")
-        
-        # Delete SLURM output files
-        slurm_out_dir = project_root / "logs"
-        if slurm_out_dir.exists():
-            slurm_files_deleted = 0
-            for slurm_file in slurm_out_dir.glob("stage1*_aug-*.out"):
-                slurm_file.unlink()
-                slurm_files_deleted += 1
-                logger.debug(f"Deleted SLURM output: {slurm_file}")
-            for slurm_file in slurm_out_dir.glob("stage1*_aug-*.err"):
-                slurm_file.unlink()
-                slurm_files_deleted += 1
-                logger.debug(f"Deleted SLURM error: {slurm_file}")
-            if slurm_files_deleted > 0:
-                logger.info(f"Stage 1: Deleted {slurm_files_deleted} SLURM output files")
-        
-        logger.info("Stage 1: Cleanup complete - ready for fresh run")
+        logger.info("Stage 1: Range-specific cleanup complete")
     
     # Open metadata file for writing (append if resuming, write if new)
     mode = 'a' if metadata_path.exists() and not delete_existing else 'w'
