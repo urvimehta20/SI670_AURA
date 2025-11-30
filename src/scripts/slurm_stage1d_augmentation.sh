@@ -21,7 +21,7 @@
 
 #SBATCH --job-name=fvc_stage1d_aug
 #SBATCH --account=si670f25_class
-#SBATCH --partition=gpu
+#SBATCH --partition=standard
 #SBATCH --time=4:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=1
