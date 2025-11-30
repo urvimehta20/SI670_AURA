@@ -14,10 +14,10 @@
 #SBATCH --job-name=fvc_stage1_aug
 #SBATCH --account=eecs442f25_class
 #SBATCH --partition=gpu
-#SBATCH --gpus=1  # Augmentation doesn't need GPU
+#SBATCH --gpus=1
 #SBATCH --time=8:00:00
 #SBATCH --mem=80G
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --output=logs/stage1_aug-%j.out
 #SBATCH --error=logs/stage1_aug-%j.err
 #SBATCH --mail-user=santoshd@umich.edu
@@ -192,6 +192,17 @@ log "Number of augmentations per video: $NUM_AUGMENTATIONS"
 OUTPUT_DIR="${FVC_STAGE1_OUTPUT_DIR:-data/augmented_videos}"
 log "Output directory: $OUTPUT_DIR"
 
+# Get delete-existing flag from environment (default: false, preserves existing)
+# Set FVC_DELETE_EXISTING=1 to delete existing augmentations before regenerating
+DELETE_EXISTING="${FVC_DELETE_EXISTING:-0}"
+if [ "$DELETE_EXISTING" = "1" ] || [ "$DELETE_EXISTING" = "true" ] || [ "$DELETE_EXISTING" = "yes" ]; then
+    DELETE_EXISTING_FLAG="--delete-existing"
+    log "Delete existing augmentations: YES (will delete and regenerate)"
+else
+    DELETE_EXISTING_FLAG=""
+    log "Delete existing augmentations: NO (will preserve existing)"
+fi
+
 STAGE1_START=$(date +%s)
 LOG_FILE="$ORIG_DIR/logs/stage1_augmentation_${SLURM_JOB_ID:-$$}.log"
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -205,11 +216,20 @@ PYTHON_CMD=$(which python || echo "python")
 log "Running Stage 1 augmentation script..."
 log "Log file: $LOG_FILE"
 
-if "$PYTHON_CMD" "$ORIG_DIR/src/scripts/run_stage1_augmentation.py" \
-    --project-root "$ORIG_DIR" \
-    --num-augmentations "$NUM_AUGMENTATIONS" \
-    --output-dir "$OUTPUT_DIR" \
-    2>&1 | tee "$LOG_FILE"; then
+# Build command with optional delete-existing flag
+STAGE1_CMD=(
+    "$PYTHON_CMD" "$ORIG_DIR/src/scripts/run_stage1_augmentation.py"
+    --project-root "$ORIG_DIR"
+    --num-augmentations "$NUM_AUGMENTATIONS"
+    --output-dir "$OUTPUT_DIR"
+)
+
+# Add delete-existing flag if enabled
+if [ -n "$DELETE_EXISTING_FLAG" ]; then
+    STAGE1_CMD+=("$DELETE_EXISTING_FLAG")
+fi
+
+if "${STAGE1_CMD[@]}" 2>&1 | tee "$LOG_FILE"; then
     
     STAGE1_END=$(date +%s)
     STAGE1_DURATION=$((STAGE1_END - STAGE1_START))
