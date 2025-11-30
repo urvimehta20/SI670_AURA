@@ -66,7 +66,7 @@ def augment_video(
     if augmentation_types is None:
         augmentation_types = [
             'rotation', 'flip', 'brightness', 'contrast', 'saturation',
-            'gaussian_noise', 'gaussian_blur', 'affine', 'elastic', 'none'
+            'gaussian_noise', 'gaussian_blur', 'affine', 'elastic'
         ]
     
     # Ensure diversity: use each augmentation type at least once
