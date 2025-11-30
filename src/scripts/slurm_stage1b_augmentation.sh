@@ -6,6 +6,10 @@
 # transformations. Processes second quarter of videos (25-50%).
 #
 # Usage:
+#   # Default: FVC_NUM_AUGMENTATIONS=10, FVC_DELETE_EXISTING=1
+#   sbatch src/scripts/slurm_stage1b_augmentation.sh
+#   
+#   # Or override defaults:
 #   FVC_NUM_AUGMENTATIONS=10 FVC_DELETE_EXISTING=1 sbatch src/scripts/slurm_stage1b_augmentation.sh
 #
 # Environment variables:
@@ -18,7 +22,7 @@
 #SBATCH --job-name=fvc_stage1b_aug
 #SBATCH --account=eecs442f25_class
 #SBATCH --partition=gpu
-#SBATCH --gpus=1
+#SBATCH --gpus=0
 #SBATCH --time=8:00:00
 #SBATCH --mem=80G
 #SBATCH --cpus-per-task=4
@@ -214,7 +218,7 @@ log "=========================================="
 log "Starting Stage 1b: Video Augmentation (25-50%)"
 log "=========================================="
 
-# Get number of augmentations from environment or use default
+# Get number of augmentations from environment or use default (10 for parallel jobs)
 NUM_AUGMENTATIONS="${FVC_NUM_AUGMENTATIONS:-10}"
 log "Number of augmentations per video: $NUM_AUGMENTATIONS"
 
@@ -222,8 +226,8 @@ log "Number of augmentations per video: $NUM_AUGMENTATIONS"
 OUTPUT_DIR="${FVC_STAGE1_OUTPUT_DIR:-data/augmented_videos}"
 log "Output directory: $OUTPUT_DIR"
 
-# Get delete-existing flag from environment (default: false, preserves existing)
-DELETE_EXISTING="${FVC_DELETE_EXISTING:-0}"
+# Get delete-existing flag from environment (default: 1 for parallel jobs to avoid conflicts)
+DELETE_EXISTING="${FVC_DELETE_EXISTING:-1}"
 if [ "$DELETE_EXISTING" = "1" ] || [ "$DELETE_EXISTING" = "true" ] || [ "$DELETE_EXISTING" = "yes" ]; then
     DELETE_EXISTING_FLAG="--delete-existing"
     log "Delete existing augmentations: YES (will delete and regenerate)"
