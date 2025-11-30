@@ -99,18 +99,6 @@ Examples:
         default=None,
         help="End index for video range (0-based, exclusive). If not specified, processes all videos to end."
     )
-    parser.add_argument(
-        "--start-idx",
-        type=int,
-        default=None,
-        help="Start index for video range (0-based, inclusive). If not specified, starts from 0."
-    )
-    parser.add_argument(
-        "--end-idx",
-        type=int,
-        default=None,
-        help="End index for video range (0-based, exclusive). If not specified, processes all videos."
-    )
     
     args = parser.parse_args()
     

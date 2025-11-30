@@ -218,20 +218,76 @@ def stage1_augment_videos(
             logger.warning(f"Could not load existing metadata: {e}, will regenerate")
             existing_metadata = None
     
-    # If deleting existing, remove all augmented files, logs, and run files
+    # If deleting existing, remove augmented files only in the specified range
     if delete_existing:
-        logger.info("Stage 1: Deleting existing augmentations, logs, and run files...")
-        if metadata_path.exists():
-            metadata_path.unlink()
-            logger.info(f"Deleted existing metadata: {metadata_path}")
+        logger.info("Stage 1: Deleting existing augmentations in range...")
         
-        # Delete all augmented video files (keep original videos)
+        # Get the video IDs that will be processed in this range
+        video_ids_in_range = set()
+        for idx in range(df.height):
+            row = df.row(idx, named=True)
+            video_rel = row["video_path"]
+            try:
+                video_path = resolve_video_path(video_rel, project_root)
+                if Path(video_path).exists():
+                    video_path_obj = Path(video_path)
+                    video_path_parts = video_path_obj.parts
+                    if len(video_path_parts) >= 2:
+                        video_id = video_path_parts[-2]
+                        video_id = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in video_id)
+                        video_ids_in_range.add(video_id)
+            except Exception:
+                continue
+        
+        logger.info(f"Stage 1: Will delete augmentations for {len(video_ids_in_range)} videos in range")
+        
+        # Delete augmented video files only for videos in this range
         aug_files_deleted = 0
         for aug_file in output_dir.glob("*_aug*.mp4"):
-            aug_file.unlink()
-            aug_files_deleted += 1
-            logger.debug(f"Deleted existing augmentation: {aug_file}")
-        logger.info(f"Stage 1: Deleted {aug_files_deleted} existing augmentation files")
+            # Extract video_id from filename (format: {video_id}_aug{idx}.mp4)
+            aug_filename = aug_file.stem  # Remove .mp4 extension
+            if "_aug" in aug_filename:
+                file_video_id = aug_filename.split("_aug")[0]
+                if file_video_id in video_ids_in_range:
+                    aug_file.unlink()
+                    aug_files_deleted += 1
+                    logger.debug(f"Deleted existing augmentation: {aug_file}")
+        
+        logger.info(f"Stage 1: Deleted {aug_files_deleted} existing augmentation files in range")
+        
+        # Delete metadata entries for videos in this range (if metadata exists)
+        if metadata_path.exists():
+            try:
+                existing_metadata = pl.read_csv(str(metadata_path))
+                # Filter out entries for videos in this range
+                rows_to_keep = []
+                for row in existing_metadata.iter_rows(named=True):
+                    original_video = row.get("original_video", "")
+                    # Extract video_id from original_video path
+                    video_path_obj = Path(original_video)
+                    if len(video_path_obj.parts) >= 2:
+                        video_id = video_path_obj.parts[-2]
+                        video_id = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in video_id)
+                        if video_id not in video_ids_in_range:
+                            rows_to_keep.append(row)
+                
+                # Rewrite metadata without deleted entries
+                if len(rows_to_keep) < existing_metadata.height:
+                    deleted_count = existing_metadata.height - len(rows_to_keep)
+                    logger.info(f"Stage 1: Removing {deleted_count} metadata entries for videos in range")
+                    # Create new DataFrame from kept rows
+                    if rows_to_keep:
+                        new_metadata = pl.DataFrame(rows_to_keep)
+                        new_metadata.write_csv(str(metadata_path))
+                        logger.info(f"Stage 1: Updated metadata file, kept {len(rows_to_keep)} entries")
+                    else:
+                        # No entries left, delete metadata file
+                        metadata_path.unlink()
+                        logger.info(f"Stage 1: Deleted metadata file (no entries remaining)")
+                else:
+                    logger.info(f"Stage 1: No metadata entries to delete for this range")
+            except Exception as e:
+                logger.warning(f"Could not update metadata file: {e}, will regenerate entries")
         
         # Delete log files
         log_dir = project_root / "logs"
