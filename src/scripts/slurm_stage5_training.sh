@@ -39,8 +39,8 @@ export PYTHONWARNINGS="ignore::UserWarning,ignore::DeprecationWarning,ignore::Fu
 
 # Set memory-optimized settings for 256GB RAM
 if [ -z "${FVC_FIXED_SIZE:-}" ]; then
-    export FVC_FIXED_SIZE=224
-    echo "Using optimized resolution: FVC_FIXED_SIZE=224 (224x224) for 256GB RAM" >&2
+    export FVC_FIXED_SIZE=256
+    echo "Using optimized resolution: FVC_FIXED_SIZE=256 (256x256) for 256GB RAM" >&2
 fi
 
 # ============================================================================

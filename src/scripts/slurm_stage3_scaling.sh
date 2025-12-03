@@ -37,9 +37,10 @@ unset MallocStackLoggingNoCompact || true
 export PYTHONWARNINGS="ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
 
 # Set memory-optimized settings for 256GB RAM
+# Note: FVC_FIXED_SIZE is for training, FVC_TARGET_SIZE is for scaling (default: 256)
 if [ -z "${FVC_FIXED_SIZE:-}" ]; then
-    export FVC_FIXED_SIZE=224
-    echo "Using optimized resolution: FVC_FIXED_SIZE=224 (224x224) for 256GB RAM" >&2
+    export FVC_FIXED_SIZE=256
+    echo "Using optimized resolution: FVC_FIXED_SIZE=256 (256x256) for 256GB RAM" >&2
 fi
 
 # ============================================================================
@@ -158,7 +159,7 @@ log "=========================================="
 log "Starting Stage 3: Video Scaling"
 log "=========================================="
 
-TARGET_SIZE="${FVC_TARGET_SIZE:-224}"
+TARGET_SIZE="${FVC_TARGET_SIZE:-256}"
 METHOD="${FVC_DOWNSCALE_METHOD:-resolution}"
 OUTPUT_DIR="${FVC_STAGE3_OUTPUT_DIR:-data/scaled_videos}"
 log "Target size: ${TARGET_SIZE}x${TARGET_SIZE}"
