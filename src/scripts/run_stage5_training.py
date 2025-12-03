@@ -79,8 +79,9 @@ Examples:
     parser.add_argument(
         "--features-stage2",
         type=str,
-        default="data/features_stage2/features_metadata.csv",
-        help="Path to Stage 2 features metadata (default: data/features_stage2/features_metadata.csv)"
+        default="data/features_stage2/features_metadata.arrow",
+        help="Path to Stage 2 features metadata (default: data/features_stage2/features_metadata.arrow). "
+             "Also supports .parquet and .csv formats."
     )
     parser.add_argument(
         "--features-stage4",

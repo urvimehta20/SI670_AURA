@@ -180,7 +180,7 @@ else
     log "✓ Stage 3 output found: $SCALED_METADATA"
 fi
 
-FEATURES_STAGE2="${FVC_STAGE2_OUTPUT_DIR:-data/features_stage2}/features_metadata.csv"
+FEATURES_STAGE2="${FVC_STAGE2_OUTPUT_DIR:-data/features_stage2}/features_metadata.arrow"
 FEATURES_STAGE2="$ORIG_DIR/$FEATURES_STAGE2"
 if [ ! -f "$FEATURES_STAGE2" ]; then
     log "✗ ERROR: Stage 2 output not found: $FEATURES_STAGE2"

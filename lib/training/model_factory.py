@@ -324,7 +324,7 @@ def get_model_input_shape(model_type: str, config: RunConfig) -> tuple:
         Input shape tuple (C, T, H, W) or description
     """
     num_frames = config.num_frames
-    fixed_size = config.fixed_size or 224
+    fixed_size = config.fixed_size or 256
     
     if model_type in ["logistic_regression", "svm"]:
         return "features"  # Handcrafted features, not video

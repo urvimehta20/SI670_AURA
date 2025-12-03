@@ -285,7 +285,7 @@ class XGBoostPretrainedBaseline:
             "label": labels
         })
         
-        video_config = VideoConfig(num_frames=self.num_frames, fixed_size=224)
+        video_config = VideoConfig(num_frames=self.num_frames, fixed_size=256)
         dataset = VideoDataset(df, project_root=project_root, config=video_config, train=False)
         
         # Extract features

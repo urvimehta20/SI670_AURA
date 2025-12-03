@@ -169,7 +169,7 @@ Examples:
         logger.info("Execution time: %.2f seconds (%.2f minutes)", 
                    stage_duration, stage_duration / 60)
         logger.info("Output directory: %s", output_dir)
-        logger.info("Features metadata: %s", output_dir / "features_metadata.csv")
+        logger.info("Features metadata: %s (will be .arrow or .parquet)", output_dir / "features_metadata")
         
         if result_df is not None and hasattr(result_df, 'height'):
             logger.info("Total videos processed: %d", result_df.height)

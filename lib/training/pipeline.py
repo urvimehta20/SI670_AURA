@@ -78,9 +78,10 @@ def stage5_train_models(
     logger.info(f"Stage 5: Found {scaled_df.height} scaled videos")
     
     # Create video config
+    # Use fixed_size=256 to match Stage 3 output (videos scaled to max(width, height) = 256)
     video_config = VideoConfig(
         num_frames=num_frames,
-        fixed_size=224,
+        fixed_size=256,
     )
     
     results = {}

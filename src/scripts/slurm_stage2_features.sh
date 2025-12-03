@@ -138,15 +138,22 @@ if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
     exit 1
 fi
 
-# Verify Stage 1 output
-AUGMENTED_METADATA="${FVC_STAGE1_OUTPUT_DIR:-data/augmented_videos}/augmented_metadata.csv"
-AUGMENTED_METADATA="$ORIG_DIR/$AUGMENTED_METADATA"
-if [ ! -f "$AUGMENTED_METADATA" ]; then
-    log "✗ ERROR: Stage 1 output not found: $AUGMENTED_METADATA"
+# Verify Stage 1 output (try Arrow first, then Parquet, then CSV)
+AUGMENTED_METADATA_DIR="${FVC_STAGE1_OUTPUT_DIR:-data/augmented_videos}"
+AUGMENTED_METADATA=""
+for ext in arrow parquet csv; do
+    candidate="$ORIG_DIR/$AUGMENTED_METADATA_DIR/augmented_metadata.$ext"
+    if [ -f "$candidate" ]; then
+        AUGMENTED_METADATA="$candidate"
+        log "✓ Stage 1 output found: $AUGMENTED_METADATA"
+        break
+    fi
+done
+if [ -z "$AUGMENTED_METADATA" ]; then
+    log "✗ ERROR: Stage 1 output not found in $ORIG_DIR/$AUGMENTED_METADATA_DIR/"
+    log "  Expected: augmented_metadata.arrow, augmented_metadata.parquet, or augmented_metadata.csv"
     log "  Run Stage 1 first: sbatch src/scripts/slurm_stage1_augmentation.sh"
     exit 1
-else
-    log "✓ Stage 1 output found: $AUGMENTED_METADATA"
 fi
 
 log "✅ All prerequisites verified"
@@ -176,7 +183,7 @@ log "Log file: $LOG_FILE"
 
 if "$PYTHON_CMD" "$ORIG_DIR/src/scripts/run_stage2_features.py" \
     --project-root "$ORIG_DIR" \
-    --augmented-metadata "${FVC_STAGE1_OUTPUT_DIR:-data/augmented_videos}/augmented_metadata.csv" \
+    --augmented-metadata "$AUGMENTED_METADATA" \
     --num-frames "$NUM_FRAMES" \
     --output-dir "$OUTPUT_DIR" \
     2>&1 | tee "$LOG_FILE"; then

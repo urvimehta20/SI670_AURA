@@ -256,7 +256,7 @@ def train_ensemble_model(
     logger.info(f"Found {scaled_df.height} videos")
     
     # Create video config
-    video_config = VideoConfig(num_frames=num_frames, fixed_size=224)
+    video_config = VideoConfig(num_frames=num_frames, fixed_size=256)
     
     # Get all folds
     all_folds = stratified_kfold(scaled_df, n_splits=n_splits, random_state=42)
