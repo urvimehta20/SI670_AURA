@@ -66,6 +66,7 @@ fi
 
 module purge
 module load python3.11-anaconda/2024.02
+module load ffmpeg || module load ffmpeg/4.4 || true
 
 # Directory setup
 mkdir -p logs .pip-cache
@@ -133,6 +134,15 @@ log "=========================================="
 # ============================================================================
 
 log "Verifying prerequisites..."
+
+# Check ffprobe availability
+if ! command -v ffprobe &> /dev/null; then
+    log "✗ ERROR: ffprobe not found. FFmpeg module may not be loaded correctly."
+    log "  Try: module load ffmpeg"
+    exit 1
+else
+    log "✓ ffprobe found: $(which ffprobe)"
+fi
 
 # Check critical Python packages
 PREREQ_PACKAGES=("polars" "numpy" "opencv-python" "av" "PIL")

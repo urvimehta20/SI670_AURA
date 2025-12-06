@@ -38,7 +38,8 @@ def stage5_train_models(
     use_tracking: bool = True,
     use_mlflow: bool = True,
     train_ensemble: bool = False,
-    ensemble_method: str = "meta_learner"
+    ensemble_method: str = "meta_learner",
+    delete_existing: bool = False
 ) -> Dict:
     """
     Stage 5: Train models using scaled videos and features.
@@ -55,6 +56,7 @@ def stage5_train_models(
         use_tracking: Whether to use experiment tracking
         train_ensemble: Whether to train ensemble model after individual models (default: False)
         ensemble_method: Ensemble method - "meta_learner" or "weighted_average" (default: "meta_learner")
+        delete_existing: If True, delete existing model checkpoints/results before regenerating (clean mode)
     
     Returns:
         Dictionary of training results
@@ -86,6 +88,22 @@ def stage5_train_models(
     
     results = {}
     
+    # Delete existing model results if clean mode
+    if delete_existing:
+        logger.info("Stage 5: Deleting existing model results (clean mode)...")
+        deleted_count = 0
+        for model_type in model_types:
+            model_output_dir = output_dir / model_type
+            if model_output_dir.exists():
+                try:
+                    import shutil
+                    shutil.rmtree(model_output_dir)
+                    deleted_count += 1
+                    logger.info(f"Deleted existing results for {model_type}")
+                except Exception as e:
+                    logger.warning(f"Could not delete {model_output_dir}: {e}")
+        logger.info(f"Stage 5: Deleted {deleted_count} existing model directories")
+    
     # Train each model type
     for model_type in model_types:
         logger.info(f"\n{'='*80}")
@@ -94,6 +112,17 @@ def stage5_train_models(
         
         model_output_dir = output_dir / model_type
         model_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Check if model training is already complete (resume mode)
+        if not delete_existing:
+            checkpoint_dir = model_output_dir / "checkpoints"
+            completion_file = model_output_dir / "training_complete.pt"
+            if completion_file.exists():
+                logger.info(f"Model {model_type} training already complete. Skipping.")
+                logger.info(f"To retrain, use --delete-existing flag")
+                continue
+            elif checkpoint_dir.exists() and any(checkpoint_dir.glob("*.pt")):
+                logger.info(f"Found existing checkpoints for {model_type}. Will resume from latest checkpoint.")
         
         # Get model config
         model_config = get_model_config(model_type)

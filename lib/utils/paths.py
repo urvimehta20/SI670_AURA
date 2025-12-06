@@ -147,12 +147,66 @@ def load_metadata_flexible(path: str) -> Optional[pl.DataFrame]:
             return None
     
     # Load based on extension
-    if path_obj.suffix == '.arrow':
-        return pl.read_ipc(path_obj)
-    elif path_obj.suffix == '.parquet':
-        return pl.read_parquet(path_obj)
-    else:
-        return pl.read_csv(path_obj)
+    try:
+        if path_obj.suffix == '.arrow':
+            return pl.read_ipc(path_obj)
+        elif path_obj.suffix == '.parquet':
+            return pl.read_parquet(path_obj)
+        else:
+            return pl.read_csv(path_obj)
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to load metadata from {path_obj}: {e}")
+        raise
+
+
+def validate_metadata_columns(df: pl.DataFrame, required_columns: List[str], stage_name: str = "") -> None:
+    """
+    Validate that a metadata DataFrame has all required columns.
+    
+    Args:
+        df: Polars DataFrame to validate
+        required_columns: List of required column names
+        stage_name: Name of the stage (for error messages)
+    
+    Raises:
+        ValueError: If any required columns are missing
+    """
+    if df is None or df.height == 0:
+        raise ValueError(f"{stage_name}: Metadata DataFrame is empty or None")
+    
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            f"{stage_name}: Missing required columns: {missing_columns}. "
+            f"Found columns: {list(df.columns)}"
+        )
+
+
+def calculate_adaptive_num_frames(
+    total_frames: int,
+    frame_percentage: float = 0.10,
+    min_frames: int = 5,
+    max_frames: int = 50
+) -> int:
+    """
+    Calculate number of frames to sample based on percentage with min/max bounds.
+    
+    Args:
+        total_frames: Total frames in video
+        frame_percentage: Percentage of frames to sample (default: 0.10 = 10%)
+        min_frames: Minimum frames to sample (for very short videos)
+        max_frames: Maximum frames to sample (for memory efficiency)
+    
+    Returns:
+        Number of frames to sample
+    """
+    if total_frames <= 0:
+        return min_frames
+    
+    calculated_frames = int(total_frames * frame_percentage)
+    return max(min_frames, min(max_frames, calculated_frames))
 
 
 __all__ = [
@@ -161,4 +215,6 @@ __all__ = [
     "check_video_path_exists",
     "find_metadata_file",
     "load_metadata_flexible",
+    "validate_metadata_columns",
+    "calculate_adaptive_num_frames",
 ]

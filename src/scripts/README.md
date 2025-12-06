@@ -15,6 +15,10 @@ This directory contains individual scripts to run each stage of the FVC pipeline
 - `run_stage4_scaled_features.py` - Stage 4: Scaled Video Feature Extraction
 - `run_stage5_training.py` - Stage 5: Model Training
 
+### Utility/Validation Scripts
+- `check_stage1_completion.py` - Verify Stage 1 completion (checks for missing/incomplete augmentations)
+- `validate_augmentations.py` - Validate augmented video file integrity
+
 ### SLURM Batch Scripts (Cluster)
 - `slurm_stage1_augmentation.sh` - Stage 1: Video Augmentation (SLURM)
 - `slurm_stage2_features.sh` - Stage 2: Feature Extraction (SLURM)
@@ -293,6 +297,40 @@ All scripts support:
 - Extensive logging with DEBUG level
 - Error handling with full tracebacks
 - Memory statistics logging
+
+## Utility Scripts
+
+### Stage 1 Completion Check
+**Script:** `check_stage1_completion.py`
+
+Verifies that all videos from input metadata were processed and augmented correctly in Stage 1.
+
+**Usage:**
+```bash
+# Auto-detect input and output metadata
+python src/scripts/check_stage1_completion.py
+
+# Specify custom paths
+python src/scripts/check_stage1_completion.py \
+    --input-metadata data/video_index_input.csv \
+    --output-metadata data/augmented_videos/augmented_metadata.arrow
+
+# Custom expected augmentations
+python src/scripts/check_stage1_completion.py --expected-augmentations 10
+```
+
+**What it checks:**
+- Missing videos: Videos in input but not in output
+- Incomplete augmentations: Videos with fewer than expected augmentations
+- Extra videos: Videos in output but not in input (may indicate issues)
+- Statistics: Original vs augmented counts, expected vs actual totals
+
+**Output:**
+- Detailed report of missing/incomplete videos
+- Statistics on augmentation completeness
+- Exit code 0 if complete, 1 if incomplete
+
+---
 
 ## Troubleshooting
 

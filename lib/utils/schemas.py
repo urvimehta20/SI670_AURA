@@ -29,7 +29,7 @@ if PANDERA_AVAILABLE:
         "video_path": pa.Column(str, nullable=False, description="Path to video file"),
         "label": pa.Column(str, nullable=False, description="Video label"),
         "original_video": pa.Column(str, nullable=True, description="Original video path"),
-        "augmentation_type": pa.Column(str, nullable=True, description="Type of augmentation applied"),
+        "augmentation_idx": pa.Column(int, nullable=True, description="Augmentation index (-1 for original videos)"),
         "is_original": pa.Column(bool, nullable=True, description="Whether this is the original video"),
     }, strict=True, coerce=True)
     

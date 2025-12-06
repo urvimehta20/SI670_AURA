@@ -68,15 +68,16 @@ Examples:
     parser.add_argument(
         "--augmented-metadata",
         type=str,
-        default="data/augmented_videos/augmented_metadata.csv",
-        help="Path to augmented metadata CSV from Stage 1 (default: data/augmented_videos/augmented_metadata.csv)"
+        default="data/augmented_videos/augmented_metadata.arrow",
+        help="Path to augmented metadata from Stage 1 (default: data/augmented_videos/augmented_metadata.arrow). "
+             "Supports .arrow, .parquet, or .csv formats. Will auto-detect format if extension is omitted."
     )
     parser.add_argument(
         "--method",
         type=str,
-        default="resolution",
+        default="autoencoder",
         choices=["resolution", "autoencoder"],
-        help="Scaling method (default: resolution). Use 'autoencoder' for Hugging Face pretrained VAE"
+        help="Scaling method (default: autoencoder). Use 'resolution' for letterbox resizing"
     )
     parser.add_argument(
         "--autoencoder-model",
@@ -94,14 +95,37 @@ Examples:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=500,
-        help="Number of frames to process per chunk (default: 500, optimized for 256GB RAM)"
+        default=100,
+        help="Number of frames to process per chunk (default: 100, optimized for 64GB RAM)"
     )
     parser.add_argument(
         "--output-dir",
         type=str,
         default="data/scaled_videos",
         help="Output directory for scaled videos (default: data/scaled_videos)"
+    )
+    parser.add_argument(
+        "--start-idx",
+        type=int,
+        default=None,
+        help="Start index for video range (0-based, inclusive). If not specified, processes all videos from start."
+    )
+    parser.add_argument(
+        "--end-idx",
+        type=int,
+        default=None,
+        help="End index for video range (0-based, exclusive). If not specified, processes all videos to end."
+    )
+    parser.add_argument(
+        "--delete-existing",
+        action="store_true",
+        help="Delete existing scaled video files before regenerating (clean mode, default: False, preserves existing)"
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=True,
+        help="Resume from existing scaled video files (skip already processed videos, default: True)"
     )
     
     args = parser.parse_args()
@@ -132,6 +156,12 @@ Examples:
     logger.info("Output directory: %s", output_dir)
     logger.info("Scaling method: %s", args.method)
     logger.info("Target max dimension: %d pixels", args.target_size)
+    if args.start_idx is not None or args.end_idx is not None:
+        logger.info("Video range: [%s, %s)",
+                   args.start_idx if args.start_idx is not None else "0",
+                   args.end_idx if args.end_idx is not None else "all")
+    logger.info("Delete existing: %s", args.delete_existing)
+    logger.info("Resume mode: %s", args.resume)
     logger.info("Log file: %s", log_file)
     logger.debug("Python version: %s", sys.version)
     logger.debug("Python executable: %s", sys.executable)
@@ -183,7 +213,11 @@ Examples:
             method=args.method,
             target_size=args.target_size,
             chunk_size=args.chunk_size,
-            autoencoder_model=args.autoencoder_model
+            autoencoder_model=args.autoencoder_model,
+            start_idx=args.start_idx,
+            end_idx=args.end_idx,
+            delete_existing=args.delete_existing,
+            resume=args.resume
         )
         
         stage_duration = time.time() - stage_start

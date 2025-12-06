@@ -15,6 +15,16 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
+# Import OOM handling utilities
+try:
+    from lib.utils.memory import check_oom_error, handle_oom_error, get_memory_stats, aggressive_gc
+except ImportError:
+    # Fallback if memory utils not available
+    def check_oom_error(e): return False
+    def handle_oom_error(e, ctx=""): pass
+    def get_memory_stats(): return {}
+    def aggressive_gc(clear_cuda=True): pass
+
 # Try to import torch for autoencoder support
 try:
     import torch
@@ -100,19 +110,60 @@ def load_hf_autoencoder(
     
     logger.info(f"Loading Hugging Face autoencoder: {model_name} on {device}")
     
+    # Determine if this is likely a standalone VAE model
+    # Standalone VAE models (e.g., "stabilityai/sd-vae-ft-mse") don't have a subfolder
+    # Full Stable Diffusion models (e.g., "CompVis/stable-diffusion-v1-4") have VAE in "vae/" subfolder
+    # Reference: https://huggingface.co/stabilityai/sd-vae-ft-mse
+    is_likely_standalone = (
+        "sd-vae" in model_name.lower() or 
+        model_name.lower().endswith("-vae") or
+        "/vae" in model_name  # Explicit path like "model/vae"
+    )
+    
+    # Try loading with appropriate strategy based on model type
+    # Use OSError for file-not-found errors (recommended by Hugging Face)
     try:
-        # Load Stable Diffusion VAE
-        vae = AutoencoderKL.from_pretrained(
-            model_name,
-            subfolder="vae" if "/vae" not in model_name else None,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32
-        )
+        if is_likely_standalone:
+            # Standalone VAE models: try without subfolder first (correct for sd-vae-ft-mse)
+            logger.debug(f"Attempting to load as standalone VAE (no subfolder)")
+            try:
+                vae = AutoencoderKL.from_pretrained(
+                    model_name,
+                    subfolder=None,
+                    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+                )
+            except (OSError, FileNotFoundError) as e1:
+                # If standalone load fails (file not found), try with subfolder as fallback
+                logger.debug(f"Standalone load failed (file not found), trying with subfolder='vae': {e1}")
+                vae = AutoencoderKL.from_pretrained(
+                    model_name,
+                    subfolder="vae",
+                    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+                )
+        else:
+            # Full Stable Diffusion models: try with subfolder first
+            logger.debug(f"Attempting to load from full model (subfolder='vae')")
+            try:
+                vae = AutoencoderKL.from_pretrained(
+                    model_name,
+                    subfolder="vae",
+                    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+                )
+            except (OSError, FileNotFoundError) as e2:
+                # If subfolder load fails, try without subfolder as fallback
+                logger.debug(f"Subfolder load failed (file not found), trying without subfolder: {e2}")
+                vae = AutoencoderKL.from_pretrained(
+                    model_name,
+                    subfolder=None,
+                    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+                )
+        
         vae = vae.to(device)
         vae.eval()
         logger.info(f"✓ Loaded autoencoder: {model_name}")
         return vae
     except Exception as e:
-        logger.error(f"Failed to load Hugging Face autoencoder {model_name}: {e}")
+        logger.error(f"Failed to load Hugging Face autoencoder {model_name} after trying both subfolder options: {e}")
         raise
 
 
@@ -158,15 +209,29 @@ def _autoencoder_scale(
     scaled_frames = []
     
     with torch.no_grad():
-        for frame in frames:
+        for frame_idx, frame in enumerate(frames):
             original_h, original_w = frame.shape[:2]
             original_aspect = original_w / original_h if original_h > 0 else 1.0
+            
+            # Proactive memory check every 10 frames
+            if frame_idx > 0 and frame_idx % 10 == 0:
+                try:
+                    mem_stats = get_memory_stats()
+                    gpu_allocated_gb = mem_stats.get("gpu_allocated_gb", 0)
+                    if gpu_allocated_gb > 8:  # Warn if GPU memory > 8GB
+                        logger.warning(f"High GPU memory usage at frame {frame_idx}: {gpu_allocated_gb:.2f}GB")
+                        aggressive_gc(clear_cuda=True)
+                except Exception:
+                    pass
             
             try:
                 if is_hf_vae:
                     # Hugging Face Stable Diffusion VAE
                     # VAE expects input in range [-1, 1] and shape (B, C, H, W)
                     # VAE has a downscale factor of 8, so we need to pad to multiples of 8
+                    
+                    # Get the dtype of the autoencoder model (float16 or float32)
+                    model_dtype = next(autoencoder.parameters()).dtype
                     
                     # First, resize frame so that max(width, height) = target_size (preserving aspect ratio)
                     # This ensures the output will have max dimension = target_size
@@ -181,7 +246,8 @@ def _autoencoder_scale(
                         original_h, original_w = new_h, new_w
                     
                     # Convert frame to tensor: (H, W, 3) -> (1, 3, H, W), normalize to [-1, 1]
-                    frame_tensor = _frame_to_tensor_hf_vae(frame, device)
+                    # Match the model's dtype (float16 or float32)
+                    frame_tensor = _frame_to_tensor_hf_vae(frame, device, dtype=model_dtype)
                     
                     # Pad to multiple of 8 (VAE requirement)
                     frame_tensor = _pad_to_multiple_of_8(frame_tensor)
@@ -248,13 +314,31 @@ def _autoencoder_scale(
                 scaled_frames.append(scaled_frame)
                 
             except Exception as e:
-                logger.warning(
-                    f"Autoencoder scaling failed for frame ({original_h}x{original_w}), "
-                    f"falling back to letterbox: {e}"
-                )
-                # Fallback to letterbox resize
-                scaled_frame = letterbox_resize(frame, target_size)
-                scaled_frames.append(scaled_frame)
+                if check_oom_error(e):
+                    handle_oom_error(e, f"autoencoder frame {frame_idx}")
+                    logger.warning(
+                        f"OOM during autoencoder scaling for frame {frame_idx} ({original_h}x{original_w}), "
+                        f"falling back to letterbox"
+                    )
+                    # Fallback to letterbox resize
+                    try:
+                        scaled_frame = letterbox_resize(frame, target_size)
+                        scaled_frames.append(scaled_frame)
+                    except Exception as e2:
+                        if check_oom_error(e2):
+                            handle_oom_error(e2, f"letterbox fallback frame {frame_idx}")
+                            logger.error(f"OOM even with letterbox fallback for frame {frame_idx}, skipping frame")
+                            aggressive_gc(clear_cuda=True)
+                            continue
+                        raise
+                else:
+                    logger.warning(
+                        f"Autoencoder scaling failed for frame ({original_h}x{original_w}), "
+                        f"falling back to letterbox: {e}"
+                    )
+                    # Fallback to letterbox resize
+                    scaled_frame = letterbox_resize(frame, target_size)
+                    scaled_frames.append(scaled_frame)
     
     return scaled_frames
 
@@ -283,7 +367,7 @@ def _frame_to_tensor(frame: np.ndarray, device: torch.device) -> torch.Tensor:
     return frame_tensor.to(device)
 
 
-def _frame_to_tensor_hf_vae(frame: np.ndarray, device: torch.device) -> torch.Tensor:
+def _frame_to_tensor_hf_vae(frame: np.ndarray, device: torch.device, dtype: Optional[torch.dtype] = None) -> torch.Tensor:
     """
     Convert numpy frame to tensor for Hugging Face VAE.
     VAE expects input in range [-1, 1] and shape (B, C, H, W).
@@ -291,9 +375,10 @@ def _frame_to_tensor_hf_vae(frame: np.ndarray, device: torch.device) -> torch.Te
     Args:
         frame: Input frame as numpy array (H, W, 3), uint8 [0, 255]
         device: Target device (CPU or CUDA)
+        dtype: Target dtype (float16 or float32). If None, uses float32.
     
     Returns:
-        Tensor of shape (1, 3, H, W), float32, normalized to [-1, 1]
+        Tensor of shape (1, 3, H, W), matching model dtype, normalized to [-1, 1]
     """
     # Ensure frame is float32 and normalize to [-1, 1]
     if frame.dtype == np.uint8:
@@ -308,6 +393,11 @@ def _frame_to_tensor_hf_vae(frame: np.ndarray, device: torch.device) -> torch.Te
     
     # Convert (H, W, 3) to (3, H, W) then add batch dimension (1, 3, H, W)
     frame_tensor = torch.from_numpy(frame_float).permute(2, 0, 1).unsqueeze(0)
+    
+    # Convert to target dtype if specified (to match model dtype)
+    if dtype is not None:
+        frame_tensor = frame_tensor.to(dtype=dtype)
+    
     return frame_tensor.to(device)
 
 
@@ -325,6 +415,10 @@ def _tensor_to_frame_hf_vae(tensor: torch.Tensor) -> np.ndarray:
     # Move to CPU
     if tensor.is_cuda:
         tensor = tensor.cpu()
+    
+    # Convert float16 to float32 for numpy compatibility (numpy doesn't support float16 well)
+    if tensor.dtype == torch.float16:
+        tensor = tensor.float()
     
     # Handle different tensor shapes
     if tensor.dim() == 4:  # (B, C, H, W)

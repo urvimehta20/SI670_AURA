@@ -67,20 +67,64 @@ Examples:
     parser.add_argument(
         "--augmented-metadata",
         type=str,
-        default="data/augmented_videos/augmented_metadata.csv",
-        help="Path to augmented metadata CSV from Stage 1 (default: data/augmented_videos/augmented_metadata.csv)"
+        default="data/augmented_videos/augmented_metadata.arrow",
+        help="Path to augmented metadata from Stage 1 (default: data/augmented_videos/augmented_metadata.arrow). "
+             "Supports .arrow, .parquet, or .csv formats. Will auto-detect format if extension is omitted."
     )
     parser.add_argument(
         "--num-frames",
         type=int,
-        default=8,
-        help="Number of frames to sample per video (default: 8, optimized for 256GB RAM)"
+        default=None,
+        help="Number of frames to sample per video (if provided, overrides percentage-based sampling). "
+             "If not provided, uses percentage-based adaptive sampling (10% of frames, min=5, max=50)"
+    )
+    parser.add_argument(
+        "--frame-percentage",
+        type=float,
+        default=0.10,
+        help="Percentage of frames to sample per video (default: 0.10 = 10%). "
+             "Only used if --num-frames is not provided."
+    )
+    parser.add_argument(
+        "--min-frames",
+        type=int,
+        default=5,
+        help="Minimum frames to sample per video (for percentage-based sampling, default: 5)"
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=50,
+        help="Maximum frames to sample per video (for percentage-based sampling, default: 50)"
     )
     parser.add_argument(
         "--output-dir",
         type=str,
         default="data/features_stage2",
         help="Output directory for features (default: data/features_stage2)"
+    )
+    parser.add_argument(
+        "--start-idx",
+        type=int,
+        default=None,
+        help="Start index for video range (0-based, inclusive). If not specified, processes all videos from start."
+    )
+    parser.add_argument(
+        "--end-idx",
+        type=int,
+        default=None,
+        help="End index for video range (0-based, exclusive). If not specified, processes all videos to end."
+    )
+    parser.add_argument(
+        "--delete-existing",
+        action="store_true",
+        help="Delete existing feature files before regenerating (clean mode, default: False, preserves existing)"
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=True,
+        help="Resume from existing feature files (skip already processed videos, default: True)"
     )
     
     args = parser.parse_args()
@@ -109,7 +153,17 @@ Examples:
     logger.info("Project root: %s", project_root)
     logger.info("Augmented metadata: %s", augmented_metadata_path)
     logger.info("Output directory: %s", output_dir)
-    logger.info("Number of frames: %d", args.num_frames)
+    if args.num_frames is not None:
+        logger.info("Frame sampling: Fixed %d frames per video", args.num_frames)
+    else:
+        logger.info("Frame sampling: Adaptive (%.1f%% of frames, min=%d, max=%d)", 
+                   args.frame_percentage * 100, args.min_frames, args.max_frames)
+    if args.start_idx is not None or args.end_idx is not None:
+        logger.info("Video range: [%s, %s)",
+                   args.start_idx if args.start_idx is not None else "0",
+                   args.end_idx if args.end_idx is not None else "all")
+    logger.info("Delete existing: %s", args.delete_existing)
+    logger.info("Resume mode: %s", args.resume)
     logger.info("Log file: %s", log_file)
     logger.debug("Python version: %s", sys.version)
     logger.debug("Python executable: %s", sys.executable)
@@ -158,7 +212,11 @@ Examples:
             project_root=str(project_root),
             augmented_metadata_path=str(augmented_metadata_path),
             num_frames=args.num_frames,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            start_idx=args.start_idx,
+            end_idx=args.end_idx,
+            delete_existing=args.delete_existing,
+            resume=args.resume
         )
         
         stage_duration = time.time() - stage_start

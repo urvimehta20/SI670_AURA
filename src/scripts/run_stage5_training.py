@@ -133,6 +133,18 @@ Examples:
         default="meta_learner",
         help="Ensemble method: 'meta_learner' (train MLP) or 'weighted_average' (simple average) (default: meta_learner)"
     )
+    parser.add_argument(
+        "--model-idx",
+        type=int,
+        default=None,
+        help="Model index for multi-node training (0-based). If specified, trains only this model from the list. "
+             "For multi-node: each node trains one model."
+    )
+    parser.add_argument(
+        "--delete-existing",
+        action="store_true",
+        help="Delete existing model checkpoints/results before regenerating (clean mode, default: False, preserves existing)"
+    )
     
     args = parser.parse_args()
     
@@ -146,10 +158,20 @@ Examples:
     # Handle "all" model types
     if "all" in args.model_types:
         available_models = list_available_models()
-        model_types = available_models
-        logger.info("Training all available models: %s", model_types)
+        all_model_types = available_models
+        logger.info("Training all available models: %s", all_model_types)
     else:
-        model_types = args.model_types
+        all_model_types = args.model_types
+    
+    # Handle model-idx for multi-node training
+    if args.model_idx is not None:
+        if args.model_idx < 0 or args.model_idx >= len(all_model_types):
+            logger.error("Invalid model-idx %d. Must be between 0 and %d", args.model_idx, len(all_model_types) - 1)
+            return 1
+        model_types = [all_model_types[args.model_idx]]
+        logger.info("Multi-node mode: Training model %d/%d: %s", args.model_idx + 1, len(all_model_types), model_types[0])
+    else:
+        model_types = all_model_types
     
     # Logging setup - also log to file
     log_dir = project_root / "logs"
@@ -176,6 +198,9 @@ Examples:
     logger.info("Number of frames: %d", args.num_frames)
     logger.info("Output directory: %s", output_dir)
     logger.info("Experiment tracking: %s", "Disabled" if args.no_tracking else "Enabled")
+    if args.model_idx is not None:
+        logger.info("Model index: %d (multi-node mode)", args.model_idx)
+    logger.info("Delete existing: %s", args.delete_existing)
     logger.info("Log file: %s", log_file)
     logger.debug("Python version: %s", sys.version)
     logger.debug("Python executable: %s", sys.executable)
@@ -260,7 +285,8 @@ Examples:
             output_dir=args.output_dir,
             use_tracking=not args.no_tracking,
             train_ensemble=args.train_ensemble,
-            ensemble_method=args.ensemble_method
+            ensemble_method=args.ensemble_method,
+            delete_existing=args.delete_existing
         )
         
         stage_duration = time.time() - stage_start
