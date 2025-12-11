@@ -27,8 +27,8 @@ class ViViTModel(nn.Module):
     
     def __init__(
         self,
-        num_frames: int = 8,
-        img_size: int = 224,
+        num_frames: int = 1000,
+        img_size: int = 256,  # Match scaled video dimensions
         tubelet_size: tuple = (2, 16, 16),  # (temporal, spatial, spatial)
         embed_dim: int = 768,
         depth: int = 12,
@@ -89,14 +89,17 @@ class ViViTModel(nn.Module):
         
         # Transformer encoder
         # Use ViT's transformer blocks as reference
+        # Note: We use ViT blocks but with our own tubelet embedding, so img_size affects
+        # our tubelet calculation, not the ViT blocks directly
         vit_backbone = timm.create_model(
             'vit_base_patch16_224',
             pretrained=pretrained,
             num_classes=0,
             global_pool='',
+            img_size=256,  # Match scaled video dimensions (for consistency)
         )
         
-        # Extract transformer blocks
+        # Extract transformer blocks (these are size-agnostic)
         self.blocks = vit_backbone.blocks
         
         self.norm = nn.LayerNorm(embed_dim)

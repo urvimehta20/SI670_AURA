@@ -10,8 +10,10 @@ Verifies:
 """
 
 import sys
+import os
 import logging
 import time
+import gc
 from pathlib import Path
 from typing import Optional
 import polars as pl
@@ -26,9 +28,12 @@ log_dir = project_root / "logs"
 log_dir.mkdir(parents=True, exist_ok=True)
 log_file = log_dir / f"sanity_check_features_{int(time.time())}.log"
 
-# Create logger
+# Create logger - prevent duplicate handlers
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Clear existing handlers to prevent duplication
+logger.handlers.clear()
 
 # Console handler
 console_handler = logging.StreamHandler(sys.stdout)
@@ -45,6 +50,9 @@ file_handler.setFormatter(file_formatter)
 # Add handlers
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
+
+# Prevent propagation to root logger
+logger.propagate = False
 
 logger.info(f"Logging to file: {log_file}")
 
@@ -202,6 +210,10 @@ def reconstruct_if_needed(features_dir: Path, metadata_name: str) -> Optional[Pa
 def main():
     project_root = Path.cwd()
     
+    # Track critical check results
+    stage2_ok = False
+    stage4_ok = False
+    
     # Expected paths - try multiple formats
     stage2_dir = project_root / "data" / "features_stage2"
     stage4_dir = project_root / "data" / "features_stage4"
@@ -249,12 +261,16 @@ def main():
             # Stage 2 can have 15 features (if codec cues unavailable) or 23 features (if codec cues available)
             if stage2_info['feature_count'] == 23:
                 logger.info("  ✓ Correct number of features (23)")
+                stage2_ok = True
             elif stage2_info['feature_count'] == 15:
                 logger.info("  ✓ Correct number of features (15 - codec cues may be unavailable)")
+                stage2_ok = True
             elif stage2_info['feature_count'] > 0:
                 logger.warning(f"  ⚠ Got {stage2_info['feature_count']} features (expected 15 or 23, but will proceed)")
+                stage2_ok = True  # Still proceed if we have features
             else:
                 logger.error(f"  ✗ No features found!")
+                stage2_ok = False
             logger.info(f"  Feature names: {stage2_info['feature_names']}")
             
             # Check individual feature files
@@ -285,10 +301,13 @@ def main():
             # Stage 4 should have 23 features (15 base + 6 scaled + 2 indicators)
             if stage4_info['feature_count'] == 23:
                 logger.info("  ✓ Correct number of features (23)")
+                stage4_ok = True
             elif stage4_info['feature_count'] > 0:
                 logger.warning(f"  ⚠ Got {stage4_info['feature_count']} features (expected 23, but will proceed)")
+                stage4_ok = True  # Still proceed if we have features
             else:
                 logger.error(f"  ✗ No features found!")
+                stage4_ok = False
             logger.info(f"  Feature names: {stage4_info['feature_names']}")
             
             # Check individual feature files
@@ -309,6 +328,7 @@ def main():
     logger.info("TESTING FEATURE LOADING")
     logger.info("=" * 80)
     
+    feature_test_success = False
     try:
         from lib.training.feature_preprocessing import load_and_combine_features
         
@@ -350,6 +370,8 @@ def main():
                     logger.info(f"Testing feature loading with {len(test_video_paths)} videos (no Stage 4 metadata, using Stage 2 only)...")
                 
                 try:
+                    # Limit to 3 videos to reduce memory pressure and potential crashes
+                    test_video_paths = test_video_paths[:3]
                     features, feature_names, kept_indices = load_and_combine_features(
                         features_stage2_path=str(stage2_metadata),
                         features_stage4_path=str(stage4_metadata) if (stage4_metadata and stage4_metadata.exists()) else None,
@@ -361,14 +383,35 @@ def main():
                     logger.info(f"  Feature matrix shape: {features.shape}")
                     logger.info(f"  Feature names count: {len(feature_names)}")
                     logger.info(f"  Sample feature names: {feature_names[:5]}")
+                    feature_test_success = True
+                    # Explicitly delete large objects to help with cleanup
+                    del features, feature_names, kept_indices
                 except Exception as e:
                     logger.error(f"✗ Failed to load features: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"✗ Error testing feature loading: {e}", exc_info=True)
     
+    if not feature_test_success:
+        logger.warning("⚠ Feature loading test failed, but continuing with sanity check")
+    
     logger.info("\n" + "=" * 80)
     logger.info("SANITY CHECK COMPLETE")
     logger.info("=" * 80)
+    
+    # Determine overall status
+    if stage2_ok and stage4_ok:
+        logger.info("✓ All critical checks passed")
+        overall_status = 0
+    elif stage2_ok:
+        logger.warning("⚠ Stage 2 OK, but Stage 4 has issues (may proceed with Stage 2 only)")
+        overall_status = 0  # Allow proceeding with Stage 2 only
+    elif stage4_ok:
+        logger.warning("⚠ Stage 4 OK, but Stage 2 has issues (may proceed with Stage 4 only)")
+        overall_status = 0  # Allow proceeding with Stage 4 only
+    else:
+        logger.error("✗ Critical checks failed - both Stage 2 and Stage 4 have issues")
+        overall_status = 1
+    
     logger.info(f"Full log saved to: {log_file}")
     
     # Flush all handlers
@@ -376,7 +419,43 @@ def main():
         handler.flush()
     sys.stdout.flush()
     sys.stderr.flush()
+    
+    # Explicit garbage collection to help prevent segfaults during cleanup
+    gc.collect()
+    
+    # Clean up handlers to prevent issues during Python shutdown
+    for handler in logger.handlers[:]:
+        try:
+            handler.close()
+        except Exception:
+            pass
+        logger.removeHandler(handler)
+    
+    # Final garbage collection
+    gc.collect()
+    
+    return overall_status
 
 if __name__ == "__main__":
-    main()
+    exit_code = 0
+    try:
+        exit_code = main()
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user")
+        exit_code = 130
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        exit_code = 1
+    finally:
+        # Ensure clean exit
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            gc.collect()
+        except Exception:
+            pass
+    
+    # Use os._exit to bypass Python cleanup that might cause segfaults
+    # This helps prevent segfaults during library cleanup (e.g., OpenCV, PyAV)
+    os._exit(exit_code)
 

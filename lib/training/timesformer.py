@@ -109,8 +109,8 @@ class TimeSformerModel(nn.Module):
     
     def __init__(
         self,
-        num_frames: int = 8,
-        img_size: int = 224,
+        num_frames: int = 1000,
+        img_size: int = 256,  # Match scaled video dimensions
         patch_size: int = 16,
         embed_dim: int = 768,
         depth: int = 12,
@@ -149,14 +149,17 @@ class TimeSformerModel(nn.Module):
         self.num_patches = (img_size // patch_size) ** 2
         
         # Use ViT as backbone for patch embedding
+        # Note: We extract patch_embed which works with any size, but we create our own pos_embed
+        # for img_size=256. The patch_embed will produce 16x16=256 patches for 256x256 input.
         vit_backbone = timm.create_model(
             'vit_base_patch16_224',
             pretrained=pretrained,
             num_classes=0,
             global_pool='',
+            img_size=256,  # Match scaled video dimensions (patch_embed will adapt)
         )
         
-        # Extract patch embedding
+        # Extract patch embedding (works with 256x256, produces 16x16=256 patches)
         self.patch_embed = vit_backbone.patch_embed
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches + 1, embed_dim))

@@ -26,7 +26,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --output=logs/stage5_coord-%j.out
 #SBATCH --error=logs/stage5_coord-%j.err
-#SBATCH --mail-user=santoshd@umich.edu
+#SBATCH --mail-user=santoshd@umich.edu,urvim@umich.edu,suzanef@umich.edu
 #SBATCH --mail-type=FAIL,TIME_LIMIT,NODE_FAIL
 
 set -euo pipefail

@@ -214,7 +214,7 @@ def train_ensemble_model(
     base_model_types: List[str],
     base_models_dir: str = "data/training_results",
     n_splits: int = 5,
-    num_frames: int = 8,
+    num_frames: int = 1000,
     output_dir: str = "data/training_results",
     ensemble_method: str = "meta_learner",  # "meta_learner" or "weighted_average"
     hidden_dim: int = 64

@@ -17,7 +17,7 @@ class NaiveCNNBaseline(nn.Module):
     Naive CNN baseline that processes frames independently and averages predictions.
     """
     
-    def __init__(self, num_frames: int = 8, num_classes: int = 2):
+    def __init__(self, num_frames: int = 1000, num_classes: int = 2):
         """
         Initialize CNN model.
         

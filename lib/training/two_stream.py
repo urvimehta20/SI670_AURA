@@ -33,7 +33,7 @@ class TwoStreamModel(nn.Module):
     
     def __init__(
         self,
-        num_frames: int = 8,
+        num_frames: int = 1000,
         rgb_backbone: str = "resnet18",  # "resnet18", "resnet50", "vit"
         flow_backbone: str = "resnet18",
         fusion_method: str = "concat",  # "concat", "weighted", "attention"
@@ -60,7 +60,8 @@ class TwoStreamModel(nn.Module):
                 'vit_base_patch16_224',
                 pretrained=pretrained,
                 num_classes=0,
-                global_pool='cls'
+                global_pool='cls',
+                img_size=256,  # Match scaled video dimensions (timm will interpolate pos embeddings)
             )
             rgb_feature_dim = 768
         else:
@@ -86,6 +87,7 @@ class TwoStreamModel(nn.Module):
             self.flow_backbone = timm.create_model(
                 'vit_base_patch16_224',
                 pretrained=pretrained,
+                img_size=256,  # Match scaled video dimensions (timm will interpolate pos embeddings)
                 num_classes=0,
                 global_pool='cls'
             )

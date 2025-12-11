@@ -43,8 +43,8 @@ class RunConfig:
     random_seed: int = 42
     
     # Video config
-    num_frames: int = 16
-    fixed_size: Optional[int] = 224
+    num_frames: int = 1000
+    fixed_size: Optional[int] = 256  # Match scaled video dimensions
     augmentation_config: Optional[Dict[str, Any]] = None
     temporal_augmentation_config: Optional[Dict[str, Any]] = None
     num_augmentations_per_video: int = 3

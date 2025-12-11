@@ -8,15 +8,15 @@
 #   sbatch src/scripts/slurm_stage5_vit_transformer.sh
 
 #SBATCH --job-name=fvc_stage5_vit_transformer
-#SBATCH --account=eecs442f25_class
+#SBATCH --account=si670f25_class
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
-#SBATCH --mem=80G
-#SBATCH --cpus-per-task=4
-#SBATCH --time=8:00:00
-#SBATCH --output=logs/stage5/vit_transformer-%j.out
-#SBATCH --error=logs/stage5/vit_transformer-%j.err
-#SBATCH --mail-user=santoshd@umich.edu
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=1
+#SBATCH --time=1-00:00:00
+#SBATCH --output=logs/stage5/stage5l-%j.out
+#SBATCH --error=logs/stage5/stage5l-%j.err
+#SBATCH --mail-user=santoshd@umich.edu,urvim@umich.edu,suzanef@umich.edu
 #SBATCH --mail-type=FAIL,TIME_LIMIT,NODE_FAIL
 
 set -euo pipefail
@@ -221,15 +221,15 @@ log "Starting Stage 5: vit_transformer Model Training"
 log "=========================================="
 
 MODEL_TYPE="vit_transformer"
-NUM_FRAMES="${FVC_NUM_FRAMES:-8}"
+NUM_FRAMES="${FVC_NUM_FRAMES:-1000}"
 N_SPLITS="${FVC_N_SPLITS:-5}"
 OUTPUT_DIR="${FVC_STAGE5_OUTPUT_DIR:-data/stage5}"
 USE_TRACKING="${FVC_USE_TRACKING:-true}"
 DELETE_EXISTING="${FVC_DELETE_EXISTING:-0}"
 
-log "Model type: $MODEL_TYPE"
+log "Model type: $MODEL_TYPE (feature-based)"
+log "Frames per video: $NUM_FRAMES (uniformly sampled from each scaled video)"
 log "K-fold splits: $N_SPLITS"
-log "Number of frames: $NUM_FRAMES"
 log "Output directory: $OUTPUT_DIR"
 log "Experiment tracking: $USE_TRACKING"
 log "Delete existing: $DELETE_EXISTING"
@@ -240,6 +240,32 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 cd "$ORIG_DIR" || FEATURES_STAGE2="$ORIG_DIR/$FEATURES_STAGE2_DIR/features_metadata.arrow"  # Dummy path
 PYTHON_CMD=$(which python || echo "python")
+
+# ============================================================================
+# Import Validation: Verify all imports work before expensive training
+# ============================================================================
+
+log "=========================================="
+log "Validating Stage 5 Imports"
+log "=========================================="
+
+VALIDATION_SCRIPT="$ORIG_DIR/src/scripts/validate_stage5_imports.py"
+if [ ! -f "$VALIDATION_SCRIPT" ]; then
+    log "⚠ WARNING: Import validation script not found: $VALIDATION_SCRIPT"
+    log "  Skipping import validation (not recommended)"
+else
+    log "Running import validation (testing with dummy tensors)..."
+    if "$PYTHON_CMD" "$VALIDATION_SCRIPT" 2>&1 | tee -a "$LOG_FILE"; then
+        log "✓ Import validation passed"
+    else
+        VALIDATION_EXIT_CODE=${PIPESTATUS[0]}
+        log "✗ ERROR: Import validation failed (exit code: $VALIDATION_EXIT_CODE)"
+        log "  Please review the validation output above"
+        log "  Training will not proceed until imports are validated"
+        log "  This catches import errors before expensive training jobs"
+        exit $VALIDATION_EXIT_CODE
+    fi
+fi
 
 # Validate Python script exists
 PYTHON_SCRIPT="$ORIG_DIR/src/scripts/run_stage5_training.py"

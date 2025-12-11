@@ -23,160 +23,160 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Memory-optimized configurations for each model type
-# NOTE: Optimized for 256GB RAM - can use larger batch sizes and more frames
+# NOTE: Optimized for 64GB RAM with 1000 frames per video - very conservative batch sizes
+# Target: Keep memory usage under 55GB
 MODEL_MEMORY_CONFIGS = {
     "logistic_regression": {
-        "batch_size": 8,  # Increased from 4 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 1,  # No accumulation needed with larger batch
+        "batch_size": 32,  # Feature-based, low memory
+        "num_workers": 0,  # No multiprocessing for memory safety
+        "num_frames": 1000,  # Not used (feature-based)
+        "gradient_accumulation_steps": 1,
     },
     "logistic_regression_stage2": {
-        "batch_size": 8,
-        "num_workers": 2,
-        "num_frames": 8,
+        "batch_size": 32,
+        "num_workers": 0,
+        "num_frames": 1000,
         "gradient_accumulation_steps": 1,
     },
     "logistic_regression_stage2_stage4": {
-        "batch_size": 8,
-        "num_workers": 2,
-        "num_frames": 8,
+        "batch_size": 32,
+        "num_workers": 0,
+        "num_frames": 1000,
         "gradient_accumulation_steps": 1,
     },
     "svm": {
-        "batch_size": 8,  # Increased from 4 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 1,  # No accumulation needed with larger batch
+        "batch_size": 32,  # Feature-based, low memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 1,
     },
     "svm_stage2": {
-        "batch_size": 8,
-        "num_workers": 2,
-        "num_frames": 8,
+        "batch_size": 32,
+        "num_workers": 0,
+        "num_frames": 1000,
         "gradient_accumulation_steps": 1,
     },
     "svm_stage2_stage4": {
-        "batch_size": 8,
-        "num_workers": 2,
-        "num_frames": 8,
+        "batch_size": 32,
+        "num_workers": 0,
+        "num_frames": 1000,
         "gradient_accumulation_steps": 1,
     },
     "naive_cnn": {
-        "batch_size": 4,  # Increased from 1 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 2,  # Maintain effective batch size of 8
+        "batch_size": 1,  # 1000 frames = very memory intensive
+        "num_workers": 0,  # No multiprocessing to save memory
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 16,  # Effective batch size = 16
     },
     "vit_gru": {
-        "batch_size": 2,  # Increased from 1 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 8,  # Maintain effective batch size of 16
+        "batch_size": 1,  # 1000 frames + GRU = high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,  # Effective batch size = 32
     },
     "vit_transformer": {
-        "batch_size": 2,  # Increased from 1 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 10,  # Maintain effective batch size of 20
+        "batch_size": 1,  # 1000 frames + transformer = very high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,  # Effective batch size = 32
     },
     "slowfast": {
-        "batch_size": 2,  # Increased from 1 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 20,  # Maintain effective batch size of 40
+        "batch_size": 1,  # Dual pathway + 1000 frames = extremely high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,  # Effective batch size = 32
     },
     "x3d": {
-        "batch_size": 2,  # Increased from 1 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 10,  # Maintain effective batch size of 20
+        "batch_size": 1,  # 1000 frames + 3D CNN = very high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,  # Effective batch size = 32
     },
     "pretrained_inception": {
-        "batch_size": 4,  # Increased from 1 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 2,  # Maintain effective batch size of 8
+        "batch_size": 1,  # 1000 frames = high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 16,  # Effective batch size = 16
     },
     "variable_ar_cnn": {
-        "batch_size": 2,  # Can use slightly larger batch for smaller model
+        "batch_size": 1,  # Variable AR + 1000 frames = high memory
         "num_workers": 0,
-        "num_frames": 8,
-        "gradient_accumulation_steps": 4,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 16,
     },
     "i3d": {
-        "batch_size": 2,  # Increased from 1 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 10,  # Maintain effective batch size of 20
+        "batch_size": 1,  # 1000 frames + I3D = very high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,  # Effective batch size = 32
     },
     "r2plus1d": {
-        "batch_size": 2,  # Increased from 1 for 256GB RAM
-        "num_workers": 2,  # Can use workers with more RAM
-        "num_frames": 8,  # Increased from 6
-        "gradient_accumulation_steps": 10,  # Maintain effective batch size of 20
+        "batch_size": 1,  # 1000 frames + R2Plus1D = very high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,  # Effective batch size = 32
     },
     # XGBoost models use pretrained models for feature extraction
-    # They don't need training configs, but we include them for consistency
     "xgboost_i3d": {
-        "batch_size": 2,  # Feature extraction only, increased for 256GB RAM
-        "num_workers": 2,
-        "num_frames": 8,  # Match I3D config
-        "gradient_accumulation_steps": 1,  # Not used (no training)
+        "batch_size": 1,  # Feature extraction with 1000 frames
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 1,
     },
     "xgboost_r2plus1d": {
-        "batch_size": 2,  # Increased for 256GB RAM
-        "num_workers": 2,
-        "num_frames": 8,  # Increased from 6
+        "batch_size": 1,
+        "num_workers": 0,
+        "num_frames": 1000,
         "gradient_accumulation_steps": 1,
     },
     "xgboost_vit_gru": {
-        "batch_size": 2,  # Increased for 256GB RAM
-        "num_workers": 2,
-        "num_frames": 8,
+        "batch_size": 1,
+        "num_workers": 0,
+        "num_frames": 1000,
         "gradient_accumulation_steps": 1,
     },
     "xgboost_vit_transformer": {
-        "batch_size": 2,  # Increased for 256GB RAM
-        "num_workers": 2,
-        "num_frames": 8,
+        "batch_size": 1,
+        "num_workers": 0,
+        "num_frames": 1000,
         "gradient_accumulation_steps": 1,
     },
     "xgboost_pretrained_inception": {
-        "batch_size": 2,  # Increased for 256GB RAM
-        "num_workers": 2,
-        "num_frames": 8,  # Increased from 6
+        "batch_size": 1,
+        "num_workers": 0,
+        "num_frames": 1000,
         "gradient_accumulation_steps": 1,
     },
     # Future models
     "timesformer": {
-        "batch_size": 1,  # Conservative for video transformers
-        "num_workers": 2,
-        "num_frames": 8,
-        "gradient_accumulation_steps": 16,
+        "batch_size": 1,  # Transformer + 1000 frames = extremely high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,
     },
     "vivit": {
-        "batch_size": 1,  # Conservative for video transformers
-        "num_workers": 2,
-        "num_frames": 8,
-        "gradient_accumulation_steps": 16,
+        "batch_size": 1,  # Video transformer + 1000 frames = extremely high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,
     },
     "two_stream": {
-        "batch_size": 1,  # Conservative (dual streams = higher memory)
-        "num_workers": 2,
-        "num_frames": 8,
-        "gradient_accumulation_steps": 16,
+        "batch_size": 1,  # Dual streams + 1000 frames = extremely high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,
     },
     "slowfast_attention": {
-        "batch_size": 1,  # Conservative (attention adds memory overhead)
-        "num_workers": 2,
-        "num_frames": 8,
-        "gradient_accumulation_steps": 20,
+        "batch_size": 1,  # Attention + dual pathway + 1000 frames = extremely high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,
     },
     "slowfast_multiscale": {
-        "batch_size": 1,  # Conservative (multiple pathways)
-        "num_workers": 2,
-        "num_frames": 8,
-        "gradient_accumulation_steps": 20,
+        "batch_size": 1,  # Multiple pathways + 1000 frames = extremely high memory
+        "num_workers": 0,
+        "num_frames": 1000,
+        "gradient_accumulation_steps": 32,
     },
 }
 
@@ -194,10 +194,10 @@ def get_model_config(model_type: str) -> Dict[str, Any]:
     if model_type not in MODEL_MEMORY_CONFIGS:
         logger.warning(f"Unknown model type: {model_type}. Using default config.")
         return {
-            "batch_size": 2,  # Conservative default for 256GB RAM
-            "num_workers": 2,  # Can use workers with more RAM
-            "num_frames": 8,  # Increased from 6
-            "gradient_accumulation_steps": 4,  # Maintain effective batch size
+            "batch_size": 1,  # Conservative default for 64GB RAM with 1000 frames
+            "num_workers": 0,  # No multiprocessing to save memory
+            "num_frames": 1000,
+            "gradient_accumulation_steps": 16,  # Maintain effective batch size
         }
     
     return MODEL_MEMORY_CONFIGS[model_type].copy()
@@ -222,13 +222,13 @@ def create_model(model_type: str, config: RunConfig) -> Any:
     # Handle both RunConfig and dict
     if isinstance(config, dict):
         model_specific = config.get("model_specific_config", {})
-        num_frames = config.get("num_frames", 8)
+        num_frames = config.get("num_frames", 1000)
     else:
         # RunConfig object - model_specific_config is always a dict
         model_specific = getattr(config, 'model_specific_config', {})
         if not isinstance(model_specific, dict):
             model_specific = {}
-        num_frames = getattr(config, 'num_frames', 8)
+        num_frames = getattr(config, 'num_frames', 1000)
     
     # Helper to safely get parameter from model_specific dict
     def get_param(key, default):
@@ -385,7 +385,7 @@ def create_model(model_type: str, config: RunConfig) -> Any:
         from .timesformer import TimeSformerModel
         return TimeSformerModel(
             num_frames=get_param("num_frames", num_frames),
-            img_size=get_param("img_size", 224),
+            img_size=get_param("img_size", 256),  # Match scaled video dimensions
             patch_size=get_param("patch_size", 16),
             embed_dim=get_param("embed_dim", 768),
             depth=get_param("depth", 12),
@@ -401,7 +401,7 @@ def create_model(model_type: str, config: RunConfig) -> Any:
         from .vivit import ViViTModel
         return ViViTModel(
             num_frames=get_param("num_frames", num_frames),
-            img_size=get_param("img_size", 224),
+            img_size=get_param("img_size", 256),  # Match scaled video dimensions
             tubelet_size=get_param("tubelet_size", (2, 16, 16)),
             embed_dim=get_param("embed_dim", 768),
             depth=get_param("depth", 12),

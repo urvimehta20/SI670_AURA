@@ -25,7 +25,7 @@ class ViTGRUModel(nn.Module):
     
     def __init__(
         self,
-        num_frames: int = 8,
+        num_frames: int = 1000,
         hidden_dim: int = 256,
         num_layers: int = 2,
         dropout: float = 0.5,
@@ -47,11 +47,13 @@ class ViTGRUModel(nn.Module):
             raise ImportError("timm is required for ViT models. Install with: pip install timm")
         
         # ViT backbone (extract features, not classification head)
+        # Specify img_size=256 to interpolate positional embeddings for 256x256 input
         self.vit_backbone = timm.create_model(
             'vit_base_patch16_224',
             pretrained=pretrained,
             num_classes=0,  # Remove classification head
             global_pool='',  # No global pooling
+            img_size=256,  # Match scaled video dimensions (timm will interpolate pos embeddings)
         )
         
         # Get feature dimension from ViT

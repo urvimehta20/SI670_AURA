@@ -37,7 +37,7 @@ class LogisticRegressionBaseline:
         features_stage4_path: Optional[str] = None,
         use_stage2_only: bool = False,
         cache_dir: Optional[str] = None,
-        num_frames: int = 8
+        num_frames: int = 1000
     ):
         """
         Initialize baseline model.
@@ -77,53 +77,46 @@ class LogisticRegressionBaseline:
         stage2_path = self.features_stage2_path
         stage4_path = None if self.use_stage2_only else self.features_stage4_path
         
-        # If no Stage 2 path provided, fall back to extracting features from videos directly
+        # Validate Stage 2 path if provided (check file exists and is not empty)
+        if stage2_path:
+            from pathlib import Path
+            from lib.utils.paths import load_metadata_flexible
+            stage2_path_obj = Path(stage2_path)
+            if not stage2_path_obj.exists():
+                logger.warning(f"Stage 2 metadata file does not exist: {stage2_path}, falling back to extraction")
+                stage2_path = None
+            else:
+                # Check if file is not empty
+                test_df = load_metadata_flexible(stage2_path)
+                if test_df is None or test_df.height == 0:
+                    logger.warning(f"Stage 2 metadata file is empty: {stage2_path}, falling back to extraction")
+                    stage2_path = None
+                else:
+                    logger.info(f"Using Stage 2 features from: {stage2_path} ({test_df.height} rows)")
+        
+        # Validate Stage 4 path if provided
+        if stage4_path:
+            from pathlib import Path
+            from lib.utils.paths import load_metadata_flexible
+            stage4_path_obj = Path(stage4_path)
+            if not stage4_path_obj.exists():
+                logger.warning(f"Stage 4 metadata file does not exist: {stage4_path}, using Stage 2 only")
+                stage4_path = None
+            else:
+                # Check if file is not empty
+                test_df = load_metadata_flexible(stage4_path)
+                if test_df is None or test_df.height == 0:
+                    logger.warning(f"Stage 4 metadata file is empty: {stage4_path}, using Stage 2 only")
+                    stage4_path = None
+        
+        # CRITICAL: Never extract features during training - they must already be extracted in Stage 2/4
         if not stage2_path:
-            logger.info(f"Extracting handcrafted features directly from {len(video_paths)} videos...")
-            from lib.features.handcrafted import HandcraftedFeatureExtractor
-            from lib.utils.memory import aggressive_gc, safe_execute
-            
-            feature_extractor = HandcraftedFeatureExtractor(
-                cache_dir=None,
-                num_frames=self.num_frames if hasattr(self, 'num_frames') else 8,
-                include_codec=True
+            raise ValueError(
+                f"Stage 2 features path is required for {self.__class__.__name__}. "
+                f"Features should already be extracted in Stage 2. "
+                f"Do NOT re-extract features during training. "
+                f"Please provide features_stage2_path in model configuration."
             )
-            
-            try:
-                features = safe_execute(
-                    feature_extractor.extract_batch,
-                    video_paths,
-                    project_root,
-                    batch_size=1,
-                    oom_retry=True,
-                    max_retries=1,
-                    context="LogisticRegression: extracting features"
-                )
-            except Exception as e:
-                logger.error(f"Failed to extract features: {e}", exc_info=True)
-                raise
-            
-            # Get feature names from extractor if available
-            feature_names = getattr(feature_extractor, 'feature_names', None)
-            if feature_names is None:
-                feature_names = [f"feature_{i}" for i in range(features.shape[1])]
-            
-            # Remove collinear features
-            logger.info("Removing collinear features...")
-            try:
-                features, kept_indices, feature_names = remove_collinear_features(
-                    features,
-                    feature_names=feature_names,
-                    correlation_threshold=0.95,
-                    method="correlation"
-                )
-            except Exception as e:
-                logger.error(f"Failed to remove collinear features: {e}", exc_info=True)
-                # Fallback: use all features
-                kept_indices = list(range(features.shape[1]))
-            
-            # Aggressive GC after feature extraction
-            aggressive_gc(clear_cuda=False)
         else:
             logger.info(
                 f"Loading features for {len(video_paths)} videos "
@@ -131,18 +124,25 @@ class LogisticRegressionBaseline:
             )
             
             # Load and combine features
+            # NOTE: Collinearity removal should already be done before splits in the main pipeline
+            # We load without removing collinearity here to avoid doing it multiple times
             try:
                 features, feature_names, kept_indices = load_and_combine_features(
                     features_stage2_path=stage2_path,
                     features_stage4_path=stage4_path,
                     video_paths=video_paths,
                     project_root=project_root,
-                    remove_collinearity=True,
+                    remove_collinearity=False,  # Already done before splits in main pipeline
                     correlation_threshold=0.95,
                     collinearity_method="correlation"
                 )
+                logger.info(f"✓ Loaded {len(feature_names)} features (collinearity already removed)")
             except Exception as e:
                 logger.error(f"Failed to load features: {e}", exc_info=True)
+                logger.error(
+                    "Make sure Stage 2/4 features are already extracted. "
+                    "Do NOT re-extract features during training."
+                )
                 raise
         
         # Validate features
@@ -227,7 +227,7 @@ class LogisticRegressionBaseline:
             
             feature_extractor = HandcraftedFeatureExtractor(
                 cache_dir=None,
-                num_frames=self.num_frames if hasattr(self, 'num_frames') else 8,
+                num_frames=self.num_frames if hasattr(self, 'num_frames') else 1000,
                 include_codec=True
             )
             

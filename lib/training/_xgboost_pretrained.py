@@ -191,7 +191,7 @@ class XGBoostPretrainedBaseline:
         self,
         base_model_type: str = "i3d",
         cache_dir: Optional[str] = None,
-        num_frames: int = 8,
+        num_frames: int = 1000,
         xgb_params: Optional[Dict] = None
     ):
         """

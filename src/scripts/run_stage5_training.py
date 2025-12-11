@@ -24,7 +24,8 @@ from typing import List
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from lib.training import stage5_train_models, list_available_models
+from lib.training.stage5_feature_pipeline import stage5_train_all_models
+from lib.training.video_training_pipeline import FEATURE_BASED_MODELS, VIDEO_BASED_MODELS
 from lib.utils.memory import log_memory_stats
 
 # Setup extensive logging
@@ -157,8 +158,8 @@ Examples:
     
     # Handle "all" model types
     if "all" in args.model_types:
-        available_models = list_available_models()
-        all_model_types = available_models
+        # Get all models (feature + video based)
+        all_model_types = list(FEATURE_BASED_MODELS | VIDEO_BASED_MODELS)
         logger.info("Training all available models: %s", all_model_types)
     else:
         all_model_types = args.model_types
@@ -231,7 +232,7 @@ Examples:
     logger.info("✓ Stage 4 features metadata found: %s", features_stage4_path)
     
     # Validate model types
-    available_models = list_available_models()
+    available_models = list(FEATURE_BASED_MODELS | VIDEO_BASED_MODELS)
     invalid_models = [m for m in model_types if m not in available_models]
     if invalid_models:
         logger.error("Invalid model types: %s", invalid_models)
@@ -240,6 +241,8 @@ Examples:
     
     logger.info("✓ All model types are valid")
     logger.debug("Available models: %s", available_models)
+    logger.debug("Feature-based: %s", FEATURE_BASED_MODELS)
+    logger.debug("Video-based: %s", VIDEO_BASED_MODELS)
     
     # Log system information
     try:
@@ -274,19 +277,18 @@ Examples:
     stage_start = time.time()
     
     try:
-        results = stage5_train_models(
+        results = stage5_train_all_models(
             project_root=str(project_root),
             scaled_metadata_path=str(scaled_metadata_path),
             features_stage2_path=str(features_stage2_path),
             features_stage4_path=str(features_stage4_path),
             model_types=model_types,
             n_splits=args.n_splits,
-            num_frames=args.num_frames,
             output_dir=args.output_dir,
-            use_tracking=not args.no_tracking,
-            train_ensemble=args.train_ensemble,
-            ensemble_method=args.ensemble_method,
-            delete_existing=args.delete_existing
+            use_gpu=True,
+            batch_size=32,
+            epochs=100,
+            num_frames=args.num_frames
         )
         
         stage_duration = time.time() - stage_start

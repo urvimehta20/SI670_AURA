@@ -139,16 +139,16 @@ class VideoConfig:
     or max_size for variable aspect ratios (requires padding in collate function).
     """
 
-    num_frames: int = 16
-    # Fixed size for both dimensions (e.g., 224) - uses letterboxing to maintain aspect ratio
+    num_frames: int = 1000
+    # Fixed size for both dimensions (e.g., 256) - uses letterboxing to maintain aspect ratio
     # This ensures all videos have the same dimensions after preprocessing, avoiding padding issues
-    # Recommended: 224 (ImageNet standard, very efficient), 256, 320
+    # Default: 256 (matches scaled video dimensions from Stage 3)
     # None = no resizing (preserves original resolution, memory-intensive)
-    fixed_size: Optional[int] = None  # e.g., 224, 256, 320
+    fixed_size: Optional[int] = None  # e.g., 256 (matches scaled videos)
     # Maximum size for the longer edge when resizing (maintains aspect ratio, but results in variable sizes)
     # Use this only if you want variable aspect ratios (requires padding in batches)
     # None = no resizing (preserves original resolution, memory-intensive)
-    max_size: Optional[int] = None  # e.g., 224, 256, 320
+    max_size: Optional[int] = None  # e.g., 256 (matches scaled videos)
     # Legacy: kept for compatibility, but use fixed_size instead
     img_size: Optional[int] = None  # Deprecated, use fixed_size
     # Rolling window options for inference
@@ -226,7 +226,7 @@ def build_frame_transforms(
 
     Args:
         train: If True, apply data augmentations (flip, color jitter)
-        fixed_size: Fixed size for both dimensions (e.g., 224). Uses letterboxing to maintain aspect ratio.
+        fixed_size: Fixed size for both dimensions (e.g., 256). Uses letterboxing to maintain aspect ratio.
                     Ensures all videos have the same dimensions, avoiding padding issues.
         max_size: Maximum size for longer edge when resizing (maintains aspect ratio, but variable output size).
                   Only used if fixed_size is None. Results in variable dimensions that need padding in batches.
@@ -440,10 +440,25 @@ class VideoDataset(Dataset):
         try:
             video = _read_video_wrapper(video_path)
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to read video at index {idx}: {video_path}. "
-                f"Error: {str(e)}"
-            ) from e
+            error_msg = str(e).lower()
+            # Handle corrupted videos (moov atom not found, etc.)
+            if 'moov atom' in error_msg or 'invalid data' in error_msg or 'corrupt' in error_msg:
+                logger.warning(
+                    f"Corrupted video at index {idx}: {video_path}. Error: {str(e)}. "
+                    f"Skipping this video. Consider filtering corrupted videos upfront."
+                )
+                # Return a dummy sample (all zeros) with the correct label
+                default_size = self.config.fixed_size or self.config.max_size or self.config.img_size or 256
+                dummy_clip = torch.zeros(
+                    (self.config.num_frames, 3, default_size, default_size),
+                    dtype=torch.float32
+                )
+                return dummy_clip, torch.tensor(label_idx, dtype=torch.long)
+            else:
+                raise RuntimeError(
+                    f"Failed to read video at index {idx}: {video_path}. "
+                    f"Error: {str(e)}"
+                ) from e
         
         # Check if video has frames
         # If filter_existing_videos was called with check_frames=True, this should be rare
@@ -458,7 +473,7 @@ class VideoDataset(Dataset):
             # Return a dummy sample (all zeros) with the correct label
             # This is a workaround - ideally these should be filtered out
             # Use a reasonable default size if fixed_size/max_size/img_size not set
-            default_size = self.config.fixed_size or self.config.max_size or self.config.img_size or 224
+            default_size = self.config.fixed_size or self.config.max_size or self.config.img_size or 256
             dummy_clip = torch.zeros(
                 (self.config.num_frames, 3, default_size, default_size),
                 dtype=torch.float32

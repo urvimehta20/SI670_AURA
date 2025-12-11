@@ -25,7 +25,7 @@ class ViTTransformerModel(nn.Module):
     
     def __init__(
         self,
-        num_frames: int = 8,
+        num_frames: int = 1000,
         d_model: int = 768,
         nhead: int = 8,
         num_layers: int = 2,
@@ -50,12 +50,13 @@ class ViTTransformerModel(nn.Module):
         if not TIMM_AVAILABLE:
             raise ImportError("timm is required for ViT models. Install with: pip install timm")
         
-        # ViT backbone
+        # ViT backbone - specify img_size=256 to interpolate positional embeddings for 256x256 input
         self.vit_backbone = timm.create_model(
             'vit_base_patch16_224',
             pretrained=pretrained,
             num_classes=0,
             global_pool='',
+            img_size=256,  # Match scaled video dimensions (timm will interpolate pos embeddings)
         )
         
         # Get feature dimension from ViT

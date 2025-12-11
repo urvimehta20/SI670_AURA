@@ -373,7 +373,7 @@ def stage5_train_models(
     features_stage4_path: str,
     model_types: List[str],
     n_splits: int = 5,
-    num_frames: int = 8,
+    num_frames: int = 1000,
     output_dir: str = "data/stage5",
     use_tracking: bool = True,
     use_mlflow: bool = True,
@@ -1136,13 +1136,30 @@ def stage5_train_models(
                         baseline_config = model_config.copy()
                         baseline_config.update(params)  # Apply grid search hyperparameters
                         
-                        # Add feature paths for Stage 2/4 models
-                        if model_type in ["logistic_regression_stage2", "logistic_regression_stage2_stage4",
-                                         "svm_stage2", "svm_stage2_stage4"]:
-                            # Use the path strings directly (they're already strings from function parameters)
-                            baseline_config["features_stage2_path"] = features_stage2_path
+                        # Add feature paths for baseline models (all logistic_regression and svm variants)
+                        # Check if metadata files exist and are not empty before passing paths
+                        from lib.utils.paths import load_metadata_flexible
+                        
+                        if model_type in ["logistic_regression", "logistic_regression_stage2", "logistic_regression_stage2_stage4",
+                                         "svm", "svm_stage2", "svm_stage2_stage4"]:
+                            # Check if Stage 2 metadata exists and is not empty
+                            stage2_df = load_metadata_flexible(features_stage2_path)
+                            if stage2_df is not None and stage2_df.height > 0:
+                                baseline_config["features_stage2_path"] = features_stage2_path
+                                logger.debug(f"Passing Stage 2 features path to {model_type}: {features_stage2_path}")
+                            else:
+                                baseline_config["features_stage2_path"] = None
+                                logger.warning(f"Stage 2 metadata not available for {model_type}, will extract features from videos")
+                            
+                            # For models that use Stage 4, check if it exists
                             if model_type in ["logistic_regression_stage2_stage4", "svm_stage2_stage4"]:
-                                baseline_config["features_stage4_path"] = features_stage4_path
+                                stage4_df = load_metadata_flexible(features_stage4_path)
+                                if stage4_df is not None and stage4_df.height > 0:
+                                    baseline_config["features_stage4_path"] = features_stage4_path
+                                    logger.debug(f"Passing Stage 4 features path to {model_type}: {features_stage4_path}")
+                                else:
+                                    baseline_config["features_stage4_path"] = None
+                                    logger.warning(f"Stage 4 metadata not available for {model_type}")
                             else:
                                 # For stage2_only models, explicitly set stage4_path to None
                                 baseline_config["features_stage4_path"] = None

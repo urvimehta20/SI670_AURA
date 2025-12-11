@@ -10,6 +10,7 @@ import sys
 import logging
 from pathlib import Path
 import polars as pl
+import numpy as np
 from typing import Optional
 
 # Add project root to path
