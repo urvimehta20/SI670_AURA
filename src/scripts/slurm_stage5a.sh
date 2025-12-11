@@ -247,7 +247,7 @@ else
     else
         VALIDATION_EXIT_CODE=${PIPESTATUS[0]}
         log "✗ ERROR: Import validation failed (exit code: $VALIDATION_EXIT_CODE)"
-        log "  Please review the validation output above"
+        log "  See validation output above for details"
         log "  Training will not proceed until imports are validated"
         log "  This catches import errors before expensive training jobs"
         exit $VALIDATION_EXIT_CODE
@@ -273,7 +273,7 @@ else
     else
         SANITY_EXIT_CODE=${PIPESTATUS[0]}
         log "✗ ERROR: Feature sanity check failed (exit code: $SANITY_EXIT_CODE)"
-        log "  Please review the sanity check output above"
+        log "  See sanity check output above for details"
         log "  Training will not proceed until features are validated"
         exit $SANITY_EXIT_CODE
     fi
