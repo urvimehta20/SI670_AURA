@@ -10,11 +10,17 @@ Usage:
 """
 
 import sys
+import os
+import gc
+import logging
 from pathlib import Path
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
+
+# Prevent logging handler duplication
+_logging_configured = False
 
 def validate_imports():
     """Validate all critical imports for Stage 5."""
@@ -188,5 +194,23 @@ def validate_imports():
 
 
 if __name__ == "__main__":
-    exit_code = validate_imports()
-    sys.exit(exit_code)
+    try:
+        exit_code = validate_imports()
+        
+        # Explicit cleanup before exit to prevent segfaults from C extensions
+        gc.collect()
+        logging.shutdown()
+        
+        # Use os._exit() to bypass Python's cleanup phase where C extensions can segfault
+        # This is safe because we've already validated everything and cleaned up
+        os._exit(exit_code)
+    except KeyboardInterrupt:
+        print("\n\n⚠ Validation interrupted by user")
+        os._exit(130)  # Standard exit code for SIGINT
+    except Exception as e:
+        print(f"\n\n✗ Unexpected error during validation: {e}")
+        import traceback
+        traceback.print_exc()
+        gc.collect()
+        logging.shutdown()
+        os._exit(1)
