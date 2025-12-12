@@ -16,6 +16,10 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+# Add project root to path before importing lib
+project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(project_root))
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -92,7 +96,8 @@ def main() -> int:
     logger.info("Feature Sanity Check")
     logger.info("=" * 80)
     
-    project_root = get_project_root()
+    # Use the project root that was already added to sys.path
+    project_root = Path(__file__).resolve().parent.parent.parent
     logger.info(f"Project root: {project_root}")
     
     # Default paths (can be overridden by environment variables)
