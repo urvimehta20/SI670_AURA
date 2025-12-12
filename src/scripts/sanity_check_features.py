@@ -54,36 +54,84 @@ def check_features_metadata(metadata_path: str, stage_name: str, min_rows: int =
         True if valid, False otherwise
     """
     try:
-        from lib.utils.paths import load_metadata_flexible
-        
         logger.info(f"Checking {stage_name} features metadata: {metadata_path}")
         
         if not metadata_path or not Path(metadata_path).exists():
             logger.warning(f"  ⚠ {stage_name} metadata file not found: {metadata_path}")
             return False
         
-        df = load_metadata_flexible(metadata_path)
-        
-        if df is None:
-            logger.warning(f"  ⚠ {stage_name} metadata could not be loaded: {metadata_path}")
-            return False
-        
-        if df.height == 0:
-            logger.warning(f"  ⚠ {stage_name} metadata is empty (0 rows): {metadata_path}")
-            return False
-        
-        if df.height < min_rows:
-            logger.warning(
-                f"  ⚠ {stage_name} metadata has only {df.height} rows "
-                f"(minimum {min_rows} recommended): {metadata_path}"
-            )
-            # Don't fail, just warn
-        
-        logger.info(f"  ✓ {stage_name} metadata valid: {df.height} feature rows")
-        logger.info(f"    Columns: {len(df.columns)}")
-        logger.info(f"    Sample columns: {list(df.columns[:5])}")
-        
-        return True
+        # Try to load metadata using polars directly (simpler, no torch dependency)
+        try:
+            import polars as pl
+            
+            # Try different formats
+            df = None
+            path_obj = Path(metadata_path)
+            
+            if path_obj.suffix == '.parquet':
+                df = pl.read_parquet(metadata_path)
+            elif path_obj.suffix == '.arrow':
+                df = pl.read_ipc(metadata_path)
+            elif path_obj.suffix == '.csv':
+                df = pl.read_csv(metadata_path)
+            else:
+                # Try all formats
+                for ext in ['.parquet', '.arrow', '.csv']:
+                    alt_path = path_obj.with_suffix(ext)
+                    if alt_path.exists():
+                        if ext == '.parquet':
+                            df = pl.read_parquet(str(alt_path))
+                        elif ext == '.arrow':
+                            df = pl.read_ipc(str(alt_path))
+                        elif ext == '.csv':
+                            df = pl.read_csv(str(alt_path))
+                        break
+            
+            if df is None:
+                logger.warning(f"  ⚠ {stage_name} metadata could not be loaded: {metadata_path}")
+                return False
+            
+            if df.height == 0:
+                logger.warning(f"  ⚠ {stage_name} metadata is empty (0 rows): {metadata_path}")
+                return False
+            
+            if df.height < min_rows:
+                logger.warning(
+                    f"  ⚠ {stage_name} metadata has only {df.height} rows "
+                    f"(minimum {min_rows} recommended): {metadata_path}"
+                )
+                # Don't fail, just warn
+            
+            logger.info(f"  ✓ {stage_name} metadata valid: {df.height} feature rows")
+            logger.info(f"    Columns: {len(df.columns)}")
+            logger.info(f"    Sample columns: {list(df.columns[:5])}")
+            
+            return True
+            
+        except ImportError:
+            # Fallback to lib.utils.paths if polars import fails
+            from lib.utils.paths import load_metadata_flexible
+            df = load_metadata_flexible(metadata_path)
+            
+            if df is None:
+                logger.warning(f"  ⚠ {stage_name} metadata could not be loaded: {metadata_path}")
+                return False
+            
+            if df.height == 0:
+                logger.warning(f"  ⚠ {stage_name} metadata is empty (0 rows): {metadata_path}")
+                return False
+            
+            if df.height < min_rows:
+                logger.warning(
+                    f"  ⚠ {stage_name} metadata has only {df.height} rows "
+                    f"(minimum {min_rows} recommended): {metadata_path}"
+                )
+            
+            logger.info(f"  ✓ {stage_name} metadata valid: {df.height} feature rows")
+            logger.info(f"    Columns: {len(df.columns)}")
+            logger.info(f"    Sample columns: {list(df.columns[:5])}")
+            
+            return True
         
     except Exception as e:
         logger.error(f"  ✗ Error checking {stage_name} metadata: {e}", exc_info=True)
