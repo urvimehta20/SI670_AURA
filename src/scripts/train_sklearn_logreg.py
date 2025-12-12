@@ -169,7 +169,10 @@ def train_sklearn_logreg(
             raise ValueError(f"Insufficient data: {scaled_df.height} rows (need > 3000)")
         
         # Log validation success message (matches SLURM script expectation)
-        logger.info(f"✓ Data validation passed: {scaled_df.height} rows (> 3000 required)")
+        # Use a format that's easy to grep: no special characters that might cause issues
+        logger.info(f"Data validation passed: {scaled_df.height} rows (> 3000 required)")
+        # Also log with checkmark for human readability
+        logger.info(f"✓ Data validation check successful")
         sys.stdout.flush()
         sys.stderr.flush()
     except Exception as e:
@@ -594,6 +597,9 @@ def train_sklearn_logreg(
         plt.close()  # Ensure plot is closed even on error
     
     logger.info(f"Training complete. Results saved to: {output_dir_path}")
+    logger.info("=" * 80)
+    logger.info("STAGE 5ALPHA TRAINING COMPLETED SUCCESSFULLY")
+    logger.info("=" * 80)
     sys.stdout.flush()
     sys.stderr.flush()
     

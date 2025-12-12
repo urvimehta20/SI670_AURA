@@ -261,14 +261,50 @@ if "$PYTHON_CMD" -u "$PYTHON_SCRIPT" \
     2>&1 | tee "$LOG_FILE"; then
     
     # Verify dataframe row count check passed
-    if grep -q "Data validation passed.*rows (> 3000 required)" "$LOG_FILE" 2>/dev/null; then
+    # Check for data validation success (accounting for checkmark and colon)
+    if grep -qE "(Data validation passed|✓ Data validation passed).*rows.*> 3000 required" "$LOG_FILE" 2>/dev/null; then
         log "✓ Data validation check passed (> 3000 rows)"
+    elif grep -qE "(Data validation passed|✓ Data validation passed)" "$LOG_FILE" 2>/dev/null; then
+        # Found validation message but pattern didn't match exactly - still consider it passed
+        log "✓ Data validation check passed (message found in log)"
     elif grep -q "Insufficient data for training" "$LOG_FILE" 2>/dev/null; then
         log "✗ ERROR: Data validation failed - insufficient rows (need > 3000)"
         log "Check log file for details: $LOG_FILE"
         exit 1
     else
         log "⚠ WARNING: Could not verify data validation check in log file"
+        log "⚠ This may indicate the script exited early or log buffering issues"
+        log "⚠ Checking log file for errors: $LOG_FILE"
+        # Check if there are any errors in the log
+        ERROR_LINES=$(grep -iE "(error|exception|failed|traceback)" "$LOG_FILE" 2>/dev/null | head -5)
+        if [ -n "$ERROR_LINES" ]; then
+            log "⚠ Found potential errors in log file:"
+            echo "$ERROR_LINES" | while IFS= read -r line; do
+                log "  $line"
+            done
+        fi
+    fi
+    
+    # Verify that output files were actually created (critical check)
+    OUTPUT_DIR_FULL="$ORIG_DIR/$OUTPUT_DIR/sklearn_logreg"
+    if [ -f "$OUTPUT_DIR_FULL/model.joblib" ] && [ -f "$OUTPUT_DIR_FULL/results.json" ]; then
+        log "✓ Output files verified: model.joblib and results.json exist"
+    elif [ -d "$OUTPUT_DIR_FULL" ]; then
+        log "⚠ WARNING: Output directory exists but model files are missing"
+        log "⚠ This suggests the script may have exited early"
+        log "⚠ Output directory contents:"
+        ls -lah "$OUTPUT_DIR_FULL" 2>/dev/null | head -10 | while IFS= read -r line; do
+            log "  $line"
+        done
+        # Check if training completion message is in log
+        if ! grep -qE "(Training complete|STAGE 5ALPHA TRAINING COMPLETED)" "$LOG_FILE" 2>/dev/null; then
+            log "✗ ERROR: Training completion message not found in log - script likely exited early"
+            exit 1
+        fi
+    else
+        log "✗ ERROR: Output directory does not exist: $OUTPUT_DIR_FULL"
+        log "✗ This indicates the script failed before creating output"
+        exit 1
     fi
     
     STAGE5_END=$(date +%s)

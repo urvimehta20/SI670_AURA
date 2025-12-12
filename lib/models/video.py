@@ -307,6 +307,135 @@ def build_frame_transforms(
 # ---------------------------------------------------------------------------
 
 
+class AdaptiveChunkSizeManager:
+    """
+    Manages adaptive chunk sizes using AIMD (Additive Increase Multiplicative Decrease).
+    
+    - On OOM: Multiplicative decrease (chunk_size *= 0.5)
+    - On success: Additive increase (chunk_size += increment)
+    - Tracks optimal chunk sizes per video or globally
+    """
+    
+    def __init__(
+        self,
+        initial_chunk_size: int = 200,
+        min_chunk_size: int = 10,
+        max_chunk_size: int = 500,
+        decrease_factor: float = 0.5,
+        increase_increment: int = 10,
+        success_threshold: int = 3,  # Number of successes before increasing
+    ):
+        self.initial_chunk_size = initial_chunk_size
+        self.min_chunk_size = min_chunk_size
+        self.max_chunk_size = max_chunk_size
+        self.decrease_factor = decrease_factor
+        self.increase_increment = increase_increment
+        self.success_threshold = success_threshold
+        
+        # Global chunk size cache (can be per-video in future)
+        self._global_chunk_size: Optional[int] = None
+        self._success_count: int = 0
+        self._video_chunk_sizes: Dict[str, int] = {}  # Per-video optimal sizes
+        
+    def get_chunk_size(self, video_path: Optional[str] = None, base_chunk_size: Optional[int] = None) -> int:
+        """
+        Get current chunk size for a video.
+        
+        Args:
+            video_path: Optional video path for per-video tracking
+            base_chunk_size: Base chunk size from config (if provided, use as starting point)
+        
+        Returns:
+            Current chunk size to use
+        """
+        # Use base_chunk_size if provided, otherwise use cached or initial
+        if base_chunk_size is not None:
+            current_size = base_chunk_size
+        elif video_path and video_path in self._video_chunk_sizes:
+            current_size = self._video_chunk_sizes[video_path]
+        elif self._global_chunk_size is not None:
+            current_size = self._global_chunk_size
+        else:
+            current_size = self.initial_chunk_size
+        
+        # Ensure within bounds
+        return max(self.min_chunk_size, min(self.max_chunk_size, current_size))
+    
+    def on_oom(self, video_path: Optional[str] = None) -> int:
+        """
+        Handle OOM error by reducing chunk size (multiplicative decrease).
+        
+        Args:
+            video_path: Optional video path for per-video tracking
+        
+        Returns:
+            New reduced chunk size
+        """
+        current_size = self.get_chunk_size(video_path)
+        new_size = max(self.min_chunk_size, int(current_size * self.decrease_factor))
+        
+        # Update cache
+        if video_path:
+            self._video_chunk_sizes[video_path] = new_size
+        else:
+            self._global_chunk_size = new_size
+        
+        # Reset success count on OOM
+        self._success_count = 0
+        
+        logger.warning(
+            f"OOM detected: reducing chunk size from {current_size} to {new_size} "
+            f"(factor: {self.decrease_factor})"
+        )
+        
+        return new_size
+    
+    def on_success(self, video_path: Optional[str] = None) -> int:
+        """
+        Handle successful processing by gradually increasing chunk size (additive increase).
+        
+        Args:
+            video_path: Optional video path for per-video tracking
+        
+        Returns:
+            Current chunk size (may be increased if threshold met)
+        """
+        self._success_count += 1
+        current_size = self.get_chunk_size(video_path)
+        
+        # Only increase after success_threshold consecutive successes
+        if self._success_count >= self.success_threshold:
+            new_size = min(self.max_chunk_size, current_size + self.increase_increment)
+            
+            if new_size > current_size:
+                # Update cache
+                if video_path:
+                    self._video_chunk_sizes[video_path] = new_size
+                else:
+                    self._global_chunk_size = new_size
+                
+                logger.info(
+                    f"Chunk size increased from {current_size} to {new_size} "
+                    f"(after {self._success_count} successes, increment: {self.increase_increment})"
+                )
+                # Reset success count after increase
+                self._success_count = 0
+                return new_size
+        
+        return current_size
+
+
+# Global adaptive chunk size manager (shared across all VideoDataset instances)
+_adaptive_chunk_manager = AdaptiveChunkSizeManager(
+    initial_chunk_size=200,
+    min_chunk_size=10,
+    max_chunk_size=500,
+    decrease_factor=0.5,
+    increase_increment=10,
+    success_threshold=3,
+)
+
+
 class VideoDataset(Dataset):
     """Dataset over videos described in a DataFrame.
 
@@ -324,6 +453,7 @@ class VideoDataset(Dataset):
         config: VideoConfig,
         train: bool = True,
         max_videos: Optional[int] = None,
+        adaptive_chunk_size: bool = True,  # Enable adaptive chunk sizing
     ) -> None:
         # Prefer Polars; support pandas-like objects minimally for compatibility.
         if isinstance(df, pl.DataFrame):
@@ -342,6 +472,7 @@ class VideoDataset(Dataset):
         self.project_root = project_root
         self.config = config
         self.train = train
+        self.adaptive_chunk_size = adaptive_chunk_size and getattr(config, 'chunk_size', None) is not None
 
         # Build label mapping (handles string labels as well).
         if self._use_polars:
@@ -415,6 +546,112 @@ class VideoDataset(Dataset):
         from lib.utils.paths import resolve_video_path
         video_rel = row["video_path"]
         return resolve_video_path(video_rel, self.project_root)
+    
+    def _load_frames_chunked(
+        self,
+        video: torch.Tensor,
+        total_frames: int,
+        chunk_size: int,
+        video_path: str,
+        idx: int
+    ) -> List[torch.Tensor]:
+        """
+        Load frames in chunks with the specified chunk size.
+        
+        This is separated from __getitem__ to enable retry logic with different chunk sizes.
+        Raises RuntimeError on OOM to trigger adaptive chunk size reduction.
+        """
+        # Chunked loading: process frames in chunks to reduce peak memory
+        # Calculate number of chunks needed
+        num_chunks = (self.config.num_frames + chunk_size - 1) // chunk_size  # Ceiling division
+        frames_per_chunk = self.config.num_frames // num_chunks
+        remainder = self.config.num_frames % num_chunks
+        
+        logger.debug(
+            f"Chunked loading: {self.config.num_frames} frames in {num_chunks} chunks "
+            f"(chunk_size={chunk_size}, frames_per_chunk={frames_per_chunk}, remainder={remainder})"
+        )
+        
+        all_frames: List[torch.Tensor] = []
+        # use_scaled_videos is passed from __getitem__ or defined here if called directly
+        # This is a local variable in _load_frames_chunked, not used in this method but kept for consistency
+        
+        # Process each chunk sequentially to minimize peak memory
+        for chunk_idx in range(num_chunks):
+            try:
+                # Calculate frames for this chunk (distribute remainder across first chunks)
+                chunk_frames = frames_per_chunk + (1 if chunk_idx < remainder else 0)
+                
+                # Uniformly sample indices for this chunk from the video
+                # Each chunk samples from the entire video to ensure good coverage
+                chunk_indices = uniform_sample_indices(total_frames, chunk_frames)
+                
+                # Load and process frames for this chunk
+                chunk_frame_tensors: List[torch.Tensor] = []
+                for i in chunk_indices:
+                    frame = video[i].numpy().astype(np.uint8)  # (H, W, C)
+                    frame_tensor = self._frame_transform(frame)  # (C, H, W)
+                    
+                    # Apply post-tensor augmentations if available (only normalization for scaled videos)
+                    if self._post_tensor_transform is not None:
+                        frame_tensor = self._post_tensor_transform(frame_tensor)
+                    
+                    chunk_frame_tensors.append(frame_tensor)
+                
+                # Add chunk frames to all_frames
+                all_frames.extend(chunk_frame_tensors)
+                
+                # Clear chunk data to free memory immediately after processing
+                del chunk_frame_tensors, chunk_indices
+                import gc
+                gc.collect()
+                
+                # Clear CUDA cache if available (helps with GPU memory)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+                # Check if it's an OOM error - if so, re-raise to trigger adaptive reduction
+                try:
+                    from lib.utils.memory import check_oom_error
+                    if check_oom_error(e):
+                        # Clear memory before re-raising
+                        import gc
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        raise RuntimeError(f"OOM during chunk {chunk_idx + 1}/{num_chunks}: {e}") from e
+                except ImportError:
+                    # Fallback: check error message
+                    error_msg = str(e).lower()
+                    if "out of memory" in error_msg or "cuda" in error_msg and "memory" in error_msg:
+                        import gc
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        raise RuntimeError(f"OOM during chunk {chunk_idx + 1}/{num_chunks}: {e}") from e
+                # Not OOM: re-raise original error
+                raise
+        
+        # Ensure we have exactly num_frames (critical for training consistency)
+        if len(all_frames) > self.config.num_frames:
+            all_frames = all_frames[:self.config.num_frames]
+            logger.debug(f"Trimmed frames from {len(all_frames)} to {self.config.num_frames}")
+        elif len(all_frames) < self.config.num_frames:
+            # Repeat frames if we're short (shouldn't happen with correct chunk calculation)
+            logger.warning(
+                f"Only got {len(all_frames)} frames, expected {self.config.num_frames}. "
+                f"Repeating last frame to reach target."
+            )
+            while len(all_frames) < self.config.num_frames:
+                all_frames.append(all_frames[-1] if all_frames else all_frames[0])
+        
+        # Final verification
+        if len(all_frames) != self.config.num_frames:
+            raise RuntimeError(
+                f"Chunked loading failed: got {len(all_frames)} frames, expected {self.config.num_frames}"
+            )
+        
+        return all_frames
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         row = self._get_row(idx)
@@ -485,77 +722,71 @@ class VideoDataset(Dataset):
         
         total_frames = video.shape[0]
 
-        # Support chunked frame loading for OOM prevention
-        chunk_size = getattr(self.config, 'chunk_size', None)
-        use_chunked_loading = chunk_size is not None and chunk_size > 0
+        # Define use_scaled_videos early so it's available in both chunked and non-chunked paths
+        use_scaled_videos = getattr(self.config, 'use_scaled_videos', False)
+
+        # Support chunked frame loading for OOM prevention with adaptive sizing
+        base_chunk_size = getattr(self.config, 'chunk_size', None)
+        use_chunked_loading = base_chunk_size is not None and base_chunk_size > 0
         
         if use_chunked_loading:
-            # Chunked loading: process frames in chunks to reduce peak memory
-            # Calculate number of chunks needed (e.g., 1000 frames / 200 chunk_size = 5 chunks)
-            num_chunks = (self.config.num_frames + chunk_size - 1) // chunk_size  # Ceiling division
-            frames_per_chunk = self.config.num_frames // num_chunks
-            remainder = self.config.num_frames % num_chunks
-            
-            logger.debug(
-                f"Chunked loading: {self.config.num_frames} frames in {num_chunks} chunks "
-                f"(chunk_size={chunk_size}, frames_per_chunk={frames_per_chunk}, remainder={remainder})"
-            )
-            
-            all_frames: List[torch.Tensor] = []
-            use_scaled_videos = getattr(self.config, 'use_scaled_videos', False)
-            
-            # Process each chunk sequentially to minimize peak memory
-            for chunk_idx in range(num_chunks):
-                # Calculate frames for this chunk (distribute remainder across first chunks)
-                chunk_frames = frames_per_chunk + (1 if chunk_idx < remainder else 0)
-                
-                # Uniformly sample indices for this chunk from the video
-                # Each chunk samples from the entire video to ensure good coverage
-                chunk_indices = uniform_sample_indices(total_frames, chunk_frames)
-                
-                # Load and process frames for this chunk
-                chunk_frame_tensors: List[torch.Tensor] = []
-                for i in chunk_indices:
-                    frame = video[i].numpy().astype(np.uint8)  # (H, W, C)
-                    frame_tensor = self._frame_transform(frame)  # (C, H, W)
-                    
-                    # Apply post-tensor augmentations if available (only normalization for scaled videos)
-                    if self._post_tensor_transform is not None:
-                        frame_tensor = self._post_tensor_transform(frame_tensor)
-                    
-                    chunk_frame_tensors.append(frame_tensor)
-                
-                # Add chunk frames to all_frames
-                all_frames.extend(chunk_frame_tensors)
-                
-                # Clear chunk data to free memory immediately after processing
-                del chunk_frame_tensors, chunk_indices
-                import gc
-                gc.collect()
-                
-                # Clear CUDA cache if available (helps with GPU memory)
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            
-            frames = all_frames
-            # Ensure we have exactly num_frames (critical for training consistency)
-            if len(frames) > self.config.num_frames:
-                frames = frames[:self.config.num_frames]
-                logger.debug(f"Trimmed frames from {len(all_frames)} to {self.config.num_frames}")
-            elif len(frames) < self.config.num_frames:
-                # Repeat frames if we're short (shouldn't happen with correct chunk calculation)
-                logger.warning(
-                    f"Only got {len(frames)} frames, expected {self.config.num_frames}. "
-                    f"Repeating last frame to reach target."
+            # Get adaptive chunk size if enabled, otherwise use base chunk size
+            if self.adaptive_chunk_size:
+                chunk_size = _adaptive_chunk_manager.get_chunk_size(
+                    video_path=video_path,
+                    base_chunk_size=base_chunk_size
                 )
-                while len(frames) < self.config.num_frames:
-                    frames.append(frames[-1] if frames else frames[0])
+            else:
+                chunk_size = base_chunk_size
             
-            # Final verification
-            if len(frames) != self.config.num_frames:
-                raise RuntimeError(
-                    f"Chunked loading failed: got {len(frames)} frames, expected {self.config.num_frames}"
-                )
+            # Retry logic with adaptive chunk sizing on OOM
+            max_retries = 5  # Maximum retries with reduced chunk size
+            retry_count = 0
+            frames: List[torch.Tensor] = []
+            
+            while retry_count <= max_retries:
+                try:
+                    frames = self._load_frames_chunked(
+                        video, total_frames, chunk_size, video_path, idx
+                    )
+                    # Success: report to adaptive manager
+                    if self.adaptive_chunk_size:
+                        _adaptive_chunk_manager.on_success(video_path=video_path)
+                    break
+                except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+                    # Use utility function for better OOM detection
+                    try:
+                        from lib.utils.memory import check_oom_error
+                        is_oom = check_oom_error(e)
+                    except ImportError:
+                        # Fallback to string matching if utility not available
+                        error_msg = str(e).lower()
+                        is_oom = (
+                            "out of memory" in error_msg or
+                            "cuda" in error_msg and "memory" in error_msg or
+                            "oom" in error_msg or
+                            "outofmemoryerror" in error_msg
+                        )
+                    
+                    if is_oom and self.adaptive_chunk_size and retry_count < max_retries:
+                        # OOM detected: reduce chunk size and retry
+                        chunk_size = _adaptive_chunk_manager.on_oom(video_path=video_path)
+                        retry_count += 1
+                        
+                        # Clear memory before retry
+                        import gc
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        
+                        logger.info(
+                            f"OOM detected: retrying with reduced chunk size {chunk_size} "
+                            f"(attempt {retry_count}/{max_retries})"
+                        )
+                        continue
+                    else:
+                        # Not OOM or max retries reached: re-raise
+                        raise
             
             # Clear video tensor to free memory (chunks already processed)
             del video
@@ -591,8 +822,7 @@ class VideoDataset(Dataset):
             
             frames: List[torch.Tensor] = []
 
-            # Check if using scaled videos - if so, skip all augmentations
-            use_scaled_videos = getattr(self.config, 'use_scaled_videos', False)
+            # use_scaled_videos already defined above, no need to redefine
 
             for i in indices:
                 frame = video[i].numpy().astype(np.uint8)  # (H, W, C)

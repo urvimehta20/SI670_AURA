@@ -664,14 +664,19 @@ def stage5_train_models(
     # Create video config (will be used only for PyTorch models)
     # Always use scaled videos - augmentation done in Stage 1, scaling in Stage 3
     # Handle both old and new VideoConfig versions (some servers may not have use_scaled_videos yet)
-    # For x3d model, use chunked frame loading to prevent OOM (200 frames per chunk, 1000 total)
+    # For x3d model, use chunked frame loading with adaptive sizing to prevent OOM
+    # Adaptive chunk size starts at 200, reduces on OOM (multiplicative decrease), increases on success (additive increase)
     use_chunked_loading = False
     chunk_size = None
     for model_type in model_types:
         if model_type == "x3d":
             use_chunked_loading = True
-            chunk_size = 200  # Process 200 frames per chunk to reduce peak memory
-            logger.info(f"Enabling chunked frame loading for {model_type}: chunk_size={chunk_size}, num_frames={num_frames}")
+            chunk_size = 200  # Initial chunk size (adaptive manager will adjust based on OOM events)
+            logger.info(
+                f"Enabling adaptive chunked frame loading for {model_type}: "
+                f"initial_chunk_size={chunk_size}, num_frames={num_frames}. "
+                f"Chunk size will adapt automatically based on OOM events (AIMD algorithm)."
+            )
             break
     
     try:
