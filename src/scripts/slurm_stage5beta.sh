@@ -325,7 +325,8 @@ echo "Arguments: --project-root $ORIG_DIR --scaled-metadata $SCALED_METADATA --f
 echo "==========================================" >> "$LOG_FILE"
 
 # Use unbuffered Python and ensure output goes to both stdout and log file
-if "$PYTHON_CMD" -u "$PYTHON_SCRIPT" \
+# Capture exit code using PIPESTATUS to get Python script's exit code, not tee's
+"$PYTHON_CMD" -u "$PYTHON_SCRIPT" \
     --project-root "$ORIG_DIR" \
     --scaled-metadata "$SCALED_METADATA" \
     --features-stage2 "$FEATURES_STAGE2" \
@@ -334,12 +335,20 @@ if "$PYTHON_CMD" -u "$PYTHON_SCRIPT" \
     --n-splits "$N_SPLITS" \
     --models "${MODELS_TO_TRAIN[@]}" \
     $DELETE_FLAG \
-    2>&1 | tee -a "$LOG_FILE"; then
-    
-    # Log completion marker
-    echo "==========================================" >> "$LOG_FILE"
-    echo "Python script completed with exit code: $?" >> "$LOG_FILE"
-    echo "==========================================" >> "$LOG_FILE"
+    2>&1 | tee -a "$LOG_FILE"
+PYTHON_EXIT_CODE=${PIPESTATUS[0]}  # Get Python script's exit code (first command in pipeline)
+TEE_EXIT_CODE=${PIPESTATUS[1]}      # Get tee's exit code (second command in pipeline)
+
+# Log completion marker with actual Python script exit code
+echo "==========================================" >> "$LOG_FILE"
+echo "Python script completed with exit code: $PYTHON_EXIT_CODE" >> "$LOG_FILE"
+if [ $TEE_EXIT_CODE -ne 0 ]; then
+    echo "WARNING: tee command failed with exit code: $TEE_EXIT_CODE" >> "$LOG_FILE"
+fi
+echo "==========================================" >> "$LOG_FILE"
+
+# Check if Python script succeeded (exit code 0)
+if [ $PYTHON_EXIT_CODE -eq 0 ]; then
     
     # Verify dataframe row count check passed
     # Check for data validation success (accounting for checkmark and colon)
