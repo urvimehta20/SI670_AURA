@@ -27,12 +27,10 @@ try:
     try:
         XGBOOST_VERSION = tuple(map(int, xgb.__version__.split('.')))
         USE_FIT_EARLY_STOPPING = XGBOOST_VERSION < (2, 0, 0)  # early_stopping_rounds in fit() only for < 2.0
-        logger.debug(f"XGBoost version: {xgb.__version__}, USE_FIT_EARLY_STOPPING: {USE_FIT_EARLY_STOPPING}")
     except (AttributeError, ValueError):
         # Fallback: assume newer API if version can't be determined
         XGBOOST_VERSION = None
         USE_FIT_EARLY_STOPPING = False
-        logger.warning("Could not determine XGBoost version, assuming >= 2.0 API")
 except ImportError:
     XGBOOST_AVAILABLE = False
     XGBOOST_VERSION = None
@@ -45,6 +43,12 @@ from lib.training.model_factory import create_model, get_model_config
 from lib.utils.memory import aggressive_gc
 
 logger = logging.getLogger(__name__)
+
+# Log XGBoost version after logger is defined
+if XGBOOST_AVAILABLE and XGBOOST_VERSION is not None:
+    logger.debug(f"XGBoost version: {xgb.__version__}, USE_FIT_EARLY_STOPPING: {USE_FIT_EARLY_STOPPING}")
+elif XGBOOST_AVAILABLE:
+    logger.warning("Could not determine XGBoost version, assuming >= 2.0 API")
 
 
 def extract_features_from_pretrained_model(
