@@ -334,16 +334,31 @@ def train_one_epoch(
                     criterion = nn.CrossEntropyLoss()
             first_batch = False
         
-        # Forward pass with AMP
-        if scaler is not None:
-            try:
-                with torch.amp.autocast('cuda'):
-                    logits = model(clips)
-            except (AttributeError, TypeError):
-                with torch.cuda.amp.autocast():
-                    logits = model(clips)
-        else:
-            logits = model(clips)
+        # Forward pass with AMP and OOM handling
+        try:
+            if scaler is not None:
+                try:
+                    with torch.amp.autocast('cuda'):
+                        logits = model(clips)
+                except (AttributeError, TypeError):
+                    with torch.cuda.amp.autocast():
+                        logits = model(clips)
+            else:
+                logits = model(clips)
+        except RuntimeError as e:
+            error_msg = str(e).lower()
+            if "out of memory" in error_msg or "cuda" in error_msg and "memory" in error_msg:
+                # OOM during forward pass - clear cache and re-raise
+                from lib.utils.memory import handle_oom_error
+                handle_oom_error(e, f"forward pass batch {batch_idx}")
+                # Clear gradients to free memory
+                if batch_idx % gradient_accumulation_steps == 0:
+                    optimizer.zero_grad()
+                # Re-raise to let caller handle (may reduce batch size or skip batch)
+                raise
+            else:
+                # Not OOM - re-raise original error
+                raise
         
         # Compute loss
         if isinstance(criterion, nn.BCEWithLogitsLoss):

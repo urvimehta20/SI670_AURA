@@ -203,6 +203,19 @@ LOG_FILE="$ORIG_DIR/logs/stage5/stage5alpha_${SLURM_JOB_ID:-$$}.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 touch "$LOG_FILE"
 
+# Ensure log file is writable
+if [ ! -w "$LOG_FILE" ]; then
+    log "✗ ERROR: Log file is not writable: $LOG_FILE"
+    exit 1
+fi
+
+# Write initial marker to log file to verify it's working
+echo "==========================================" >> "$LOG_FILE"
+echo "STAGE 5ALPHA LOG FILE INITIALIZED" >> "$LOG_FILE"
+echo "Timestamp: $(date)" >> "$LOG_FILE"
+echo "Log file: $LOG_FILE" >> "$LOG_FILE"
+echo "==========================================" >> "$LOG_FILE"
+
 cd "$ORIG_DIR" || exit 1
 PYTHON_CMD=$(which python3 2>/dev/null || which python 2>/dev/null || echo "python3")
 # Use unbuffered Python for immediate output
@@ -244,12 +257,36 @@ fi
 log "Running sklearn LogisticRegression training script..."
 log "Log file: $LOG_FILE"
 log "Command flags: DELETE_FLAG='$DELETE_FLAG'"
+log "Python command: $PYTHON_CMD"
+log "Python script: $PYTHON_SCRIPT"
+
+# Verify Python script exists and is executable
+if [ ! -f "$PYTHON_SCRIPT" ]; then
+    log "✗ ERROR: Python script not found: $PYTHON_SCRIPT"
+    echo "ERROR: Python script not found: $PYTHON_SCRIPT" >> "$LOG_FILE"
+    exit 1
+fi
+
+if [ ! -x "$PYTHON_SCRIPT" ] && [ ! -r "$PYTHON_SCRIPT" ]; then
+    log "✗ ERROR: Python script is not readable: $PYTHON_SCRIPT"
+    echo "ERROR: Python script is not readable: $PYTHON_SCRIPT" >> "$LOG_FILE"
+    exit 1
+fi
 
 FEATURES_STAGE4_ARG=""
 if [ -n "$FEATURES_STAGE4" ]; then
     FEATURES_STAGE4_ARG="--features-stage4 $FEATURES_STAGE4"
 fi
 
+# Log the full command being executed
+log "Executing: $PYTHON_CMD -u $PYTHON_SCRIPT --project-root $ORIG_DIR --scaled-metadata $SCALED_METADATA --features-stage2 $FEATURES_STAGE2 $FEATURES_STAGE4_ARG --output-dir $OUTPUT_DIR/sklearn_logreg --n-splits $N_SPLITS $DELETE_FLAG"
+echo "Executing command..." >> "$LOG_FILE"
+echo "Python: $PYTHON_CMD" >> "$LOG_FILE"
+echo "Script: $PYTHON_SCRIPT" >> "$LOG_FILE"
+echo "Arguments: --project-root $ORIG_DIR --scaled-metadata $SCALED_METADATA --features-stage2 $FEATURES_STAGE2 $FEATURES_STAGE4_ARG --output-dir $OUTPUT_DIR/sklearn_logreg --n-splits $N_SPLITS $DELETE_FLAG" >> "$LOG_FILE"
+echo "==========================================" >> "$LOG_FILE"
+
+# Use unbuffered Python and ensure output goes to both stdout and log file
 if "$PYTHON_CMD" -u "$PYTHON_SCRIPT" \
     --project-root "$ORIG_DIR" \
     --scaled-metadata "$SCALED_METADATA" \
@@ -258,7 +295,12 @@ if "$PYTHON_CMD" -u "$PYTHON_SCRIPT" \
     --output-dir "$OUTPUT_DIR/sklearn_logreg" \
     --n-splits "$N_SPLITS" \
     $DELETE_FLAG \
-    2>&1 | tee "$LOG_FILE"; then
+    2>&1 | tee -a "$LOG_FILE"; then
+    
+    # Log completion marker
+    echo "==========================================" >> "$LOG_FILE"
+    echo "Python script completed with exit code: $?" >> "$LOG_FILE"
+    echo "==========================================" >> "$LOG_FILE"
     
     # Verify dataframe row count check passed
     # Check for data validation success (accounting for checkmark and colon)

@@ -61,7 +61,7 @@ def get_hyperparameter_grid(model_type: str) -> Dict[str, List[Any]]:
         "naive_cnn": {
             "learning_rate": [1e-4, 5e-4, 1e-3],  # Reduced from 4 to 3 values (3*3*2*2 = 36 combinations)
             "weight_decay": [1e-5, 1e-4, 1e-3],
-            "batch_size": [4, 8],  # Reduced from 3 to 2 values
+            "batch_size": [1],  # Capped at 1 to prevent OOM (processes 1000 frames at full resolution)
             "num_epochs": [20, 30]  # Reduced from 3 to 2 values
         },
         "pretrained_inception": {
@@ -69,12 +69,12 @@ def get_hyperparameter_grid(model_type: str) -> Dict[str, List[Any]]:
             "backbone_lr": [5e-6, 1e-5],  # Reduced from 3 to 2 values
             "head_lr": [5e-4, 1e-3],  # Reduced from 3 to 2 values
             "weight_decay": [1e-5, 1e-4],  # Reduced from 3 to 2 values
-            "batch_size": [4, 8]
+            "batch_size": [2]  # Capped at 2 to prevent OOM (large pretrained model processing many frames)
         },
         "variable_ar_cnn": {
             "learning_rate": [1e-4, 5e-4],  # Reduced from 3 to 2 values (2*2*2 = 8 combinations)
             "weight_decay": [1e-5, 1e-4],
-            "batch_size": [2, 4]
+            "batch_size": [2]  # Capped at 2 to prevent OOM (processes variable-length videos with many frames)
         },
         "i3d": {
             "learning_rate": [5e-5, 1e-4],  # Reduced from 3 to 2 values (2*2*2*2*2 = 32 combinations)
@@ -95,7 +95,8 @@ def get_hyperparameter_grid(model_type: str) -> Dict[str, List[Any]]:
             "backbone_lr": [1e-6, 5e-6],
             "head_lr": [1e-4, 5e-4],
             "weight_decay": [1e-4, 1e-3],
-            "batch_size": [2, 4]
+            # batch_size removed - x3d requires batch_size=1 to prevent OOM (enforced in pipeline.py)
+            # gradient_accumulation_steps will be adjusted to maintain effective batch size
         },
         "slowfast": {
             "learning_rate": [5e-5, 1e-4],  # Reduced from 3 to 2 values

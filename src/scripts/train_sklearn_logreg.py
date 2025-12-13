@@ -83,9 +83,17 @@ from lib.utils.paths import load_metadata_flexible
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s'
+    format='%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
+    force=True  # Force reconfiguration in case logging was already configured
 )
 logger = logging.getLogger(__name__)
+
+# Immediately log startup to ensure something is written to log file
+logger.info("=" * 80)
+logger.info("STAGE 5ALPHA: sklearn LogisticRegression Training Script Starting")
+logger.info("=" * 80)
+sys.stdout.flush()
+sys.stderr.flush()
 
 # Setup crash handlers after logger is created
 setup_crash_handlers(logger)
@@ -607,6 +615,11 @@ def train_sklearn_logreg(
 
 
 def main():
+    # Log immediately to ensure output is written
+    logger.info("Parsing command line arguments...")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
     parser = argparse.ArgumentParser(description="Train sklearn LogisticRegression with L1/L2/ElasticNet")
     parser.add_argument("--project-root", type=str, required=True)
     parser.add_argument("--scaled-metadata", type=str, required=True)
@@ -620,17 +633,39 @@ def main():
         help="Delete existing output directory before training (clean mode, default: False)"
     )
     
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+        logger.info(f"Arguments parsed successfully:")
+        logger.info(f"  project-root: {args.project_root}")
+        logger.info(f"  scaled-metadata: {args.scaled_metadata}")
+        logger.info(f"  features-stage2: {args.features_stage2}")
+        logger.info(f"  features-stage4: {args.features_stage4}")
+        logger.info(f"  output-dir: {args.output_dir}")
+        logger.info(f"  n-splits: {args.n_splits}")
+        logger.info(f"  delete-existing: {args.delete_existing}")
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except SystemExit as e:
+        logger.error(f"Argument parsing failed: {e}")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise
     
-    train_sklearn_logreg(
-        project_root=args.project_root,
-        scaled_metadata_path=args.scaled_metadata,
-        features_stage2_path=args.features_stage2,
-        features_stage4_path=args.features_stage4,
-        output_dir=args.output_dir,
-        n_splits=args.n_splits,
-        delete_existing=args.delete_existing
-    )
+    try:
+        train_sklearn_logreg(
+            project_root=args.project_root,
+            scaled_metadata_path=args.scaled_metadata,
+            features_stage2_path=args.features_stage2,
+            features_stage4_path=args.features_stage4,
+            output_dir=args.output_dir,
+            n_splits=args.n_splits,
+            delete_existing=args.delete_existing
+        )
+    except Exception as e:
+        logger.critical(f"Training failed with exception: {type(e).__name__}: {e}", exc_info=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise
 
 
 if __name__ == "__main__":

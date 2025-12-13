@@ -11,6 +11,17 @@ import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
+# Import aggressive GC for memory management
+try:
+    from lib.utils.memory import aggressive_gc
+except ImportError:
+    # Fallback if not available
+    def aggressive_gc(clear_cuda: bool = False):
+        import gc
+        gc.collect()
+        if clear_cuda and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 
 class NaiveCNNBaseline(nn.Module):
     """
@@ -104,23 +115,52 @@ class NaiveCNNBaseline(nn.Module):
             if x.shape[2] < 8 or x.shape[3] < 8:
                 raise ValueError(f"Input spatial dimensions too small: {x.shape[2]}x{x.shape[3]}, minimum 8x8 required")
             
-            # Process each frame independently
-            x = F.relu(self.bn1(self.conv1(x)))
-            x = F.max_pool2d(x, 2)
-            x = F.relu(self.bn2(self.conv2(x)))
-            x = F.max_pool2d(x, 2)
-            x = F.relu(self.bn3(self.conv3(x)))
-            x = self.pool(x)
-            x = x.view(x.size(0), -1)  # Flatten
+            # Process frames in chunks to avoid OOM when processing many frames (e.g., 1000)
+            # Chunk size: process up to 100 frames at a time to limit memory usage
+            chunk_size = 100
+            total_frames = x.size(0)
+            num_chunks = (total_frames + chunk_size - 1) // chunk_size
             
-            # Validate flattened size
-            if x.shape[1] != 128:
-                raise ValueError(f"Unexpected feature size after pooling: {x.shape[1]}, expected 128")
+            all_logits = []
+            for chunk_idx in range(num_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min(start_idx + chunk_size, total_frames)
+                chunk = x[start_idx:end_idx]
+                
+                # Process chunk through CNN
+                chunk = F.relu(self.bn1(self.conv1(chunk)))
+                chunk = F.max_pool2d(chunk, 2)
+                chunk = F.relu(self.bn2(self.conv2(chunk)))
+                chunk = F.max_pool2d(chunk, 2)
+                chunk = F.relu(self.bn3(self.conv3(chunk)))
+                chunk = self.pool(chunk)
+                chunk = chunk.view(chunk.size(0), -1)  # Flatten
+                
+                # Validate flattened size
+                if chunk.shape[1] != 128:
+                    raise ValueError(f"Unexpected feature size after pooling: {chunk.shape[1]}, expected 128")
+                
+                # Classification
+                chunk = F.relu(self.fc1(chunk))
+                chunk = self.dropout(chunk)
+                chunk_logits = self.fc2(chunk)  # (chunk_size, num_classes)
+                
+                all_logits.append(chunk_logits)
+                
+                # Aggressive GC after each chunk to free memory (except last chunk)
+                if torch.cuda.is_available() and chunk_idx < num_chunks - 1:  # Don't clear on last chunk
+                    del chunk, chunk_logits
+                    torch.cuda.empty_cache()
+                    aggressive_gc(clear_cuda=True)
             
-            # Classification
-            x = F.relu(self.fc1(x))
-            x = self.dropout(x)
-            logits = self.fc2(x)  # (N*T, num_classes)
+            # Concatenate all chunk logits (all should already be on same device as input)
+            logits = torch.cat(all_logits, dim=0)  # (N*T, num_classes)
+            
+            # Clean up intermediate tensors
+            del all_logits
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                aggressive_gc(clear_cuda=True)
             
             # Reshape back to (N, T, num_classes) and average over frames
             # Fix: check logits.dim() instead of x.dim() (x is already flattened)
