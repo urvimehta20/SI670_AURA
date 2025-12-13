@@ -685,8 +685,9 @@ class XGBoostPretrainedBaseline:
         logger.info("Training XGBoost with improved architecture (multi-layer + temporal pooling + class weights + early stopping)...")
         
         # CRITICAL: XGBoost API varies by version - handle all cases robustly
-        # XGBoost 2.0+ requires callbacks in CONSTRUCTOR, not fit()
-        # XGBoost < 2.0 uses early_stopping_rounds in fit()
+        # XGBoost 1.3.0+ deprecated callbacks in fit() - must use constructor
+        # XGBoost < 2.0: early_stopping_rounds can be in fit()
+        # XGBoost >= 2.0: callbacks must be in constructor, NOT fit()
         try:
             if USE_FIT_EARLY_STOPPING:
                 # XGBoost < 2.0: early_stopping_rounds is a parameter to fit()
@@ -698,28 +699,24 @@ class XGBoostPretrainedBaseline:
                     verbose=False
                 )
             else:
-                # XGBoost >= 2.0: callbacks must be in CONSTRUCTOR, not fit()
-                # Try callbacks in constructor first (correct API for 2.0+)
+                # XGBoost >= 2.0: callbacks MUST be in constructor, NOT fit()
                 try:
                     from xgboost.callback import EarlyStopping
-                    callbacks = [EarlyStopping(rounds=20, save_best=True)]
-                    # CRITICAL: Remove any early_stopping_rounds from fit_params to avoid conflicts
-                    constructor_params = fit_params.copy()
-                    constructor_params.pop('early_stopping_rounds', None)
-                    self.model = xgb.XGBClassifier(**constructor_params, callbacks=callbacks)
+                    # CRITICAL: Set callbacks in constructor for XGBoost 2.0+
+                    self.model = xgb.XGBClassifier(
+                        **fit_params,
+                        callbacks=[EarlyStopping(rounds=20, save_best=True)]
+                    )
                     self.model.fit(
                         X_train, y_train,
                         eval_set=[(X_val, y_val)],
                         verbose=False
                     )
                 except (ImportError, AttributeError, TypeError) as e:
-                    # Callbacks not available - try early_stopping_rounds in constructor
-                    logger.warning(f"Callbacks in constructor not supported: {e}. Trying early_stopping_rounds in constructor.")
+                    # Callbacks not available - try early_stopping_rounds in constructor as fallback
+                    logger.warning(f"Callbacks not available: {e}. Trying early_stopping_rounds in constructor.")
                     try:
-                        # Remove any existing early_stopping_rounds to avoid duplicates
-                        constructor_params = fit_params.copy()
-                        constructor_params.pop('early_stopping_rounds', None)
-                        self.model = xgb.XGBClassifier(**constructor_params, early_stopping_rounds=20)
+                        self.model = xgb.XGBClassifier(**fit_params, early_stopping_rounds=20)
                         self.model.fit(
                             X_train, y_train,
                             eval_set=[(X_val, y_val)],
@@ -735,14 +732,10 @@ class XGBoostPretrainedBaseline:
                             verbose=False
                         )
         except TypeError as e:
-            # Catch any remaining TypeError from fit() and fall back to no early stopping
-            if "callbacks" in str(e) or "early_stopping" in str(e).lower() or "unexpected keyword" in str(e).lower():
+            # Catch any TypeError and fall back to no early stopping
+            if "callbacks" in str(e) or "early_stopping" in str(e).lower():
                 logger.warning(f"Early stopping API not supported: {e}. Training without early stopping.")
-                # Ensure model is created without early stopping parameters
-                constructor_params = fit_params.copy()
-                constructor_params.pop('early_stopping_rounds', None)
-                constructor_params.pop('callbacks', None)
-                self.model = xgb.XGBClassifier(**constructor_params)
+                self.model = xgb.XGBClassifier(**fit_params)
                 self.model.fit(
                     X_train, y_train,
                     eval_set=[(X_val, y_val)],
