@@ -111,6 +111,7 @@ def remove_collinear_features(
         corr_matrix = np.corrcoef(features_var_filtered.T)
         
         # Find highly correlated feature pairs
+        # NOTE: range(len()) is necessary here because we need indices for matrix access
         to_remove = set()
         for i in range(len(kept_indices)):
             if i in to_remove:
@@ -132,6 +133,7 @@ def remove_collinear_features(
                     )
         
         # Filter features
+        # NOTE: range(len()) is necessary here for index-based filtering
         final_kept_indices = [kept_indices[i] for i in range(len(kept_indices)) if i not in to_remove]
         features_filtered = features_var_filtered[:, [i for i in range(len(kept_indices)) if i not in to_remove]]
         final_feature_names = [kept_feature_names[i] for i in range(len(kept_indices)) if i not in to_remove]

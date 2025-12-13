@@ -311,8 +311,9 @@ def stage2_extract_features(
     
     # Check for expected video count (298 original * 11 augmentations = 3278)
     if 'is_original' in df.columns:
-        original_count = df.filter(pl.col('is_original') == True).height
-        augmented_count = df.filter(pl.col('is_original') == False).height
+        # CODE QUALITY: Use Polars boolean filtering instead of == True/False
+        original_count = df.filter(pl.col('is_original')).height
+        augmented_count = df.filter(~pl.col('is_original')).height
         logger.info(f"  - Original videos: {original_count}")
         logger.info(f"  - Augmented videos: {augmented_count}")
         logger.info(f"  - Total videos: {df.height}")

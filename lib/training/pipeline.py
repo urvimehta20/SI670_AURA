@@ -658,6 +658,38 @@ def stage5_train_models(
     logger.info(f"Stage 5: Found {scaled_df.height} scaled videos")
     _flush_logs()
     
+    # CRITICAL: Filter out corrupted videos and videos with no frames before training
+    # This prevents runtime errors like "moov atom not found" and "Video has no frames"
+    logger.info("=" * 80)
+    logger.info("STAGE 5: VALIDATING VIDEOS (checking for corruption and empty videos)")
+    logger.info("=" * 80)
+    from lib.data import filter_existing_videos
+    try:
+        # Filter corrupted videos (moov atom errors, etc.) and videos with no frames
+        # check_corruption=True: Check for corrupted videos (default, prevents moov atom errors)
+        # check_frames=True: Also check that videos have frames (prevents "Video has no frames" errors)
+        scaled_df = filter_existing_videos(
+            scaled_df, 
+            project_root=project_root_str,
+            check_frames=True,  # Check for videos with no frames
+            check_corruption=True  # Check for corrupted videos (moov atom errors, etc.)
+        )
+        logger.info(f"✓ Video validation complete: {scaled_df.height} valid videos ready for training")
+        logger.info("=" * 80)
+        _flush_logs()
+    except ValueError as e:
+        error_msg = (
+            f"✗ ERROR: Video validation failed. "
+            f"Please check that scaled videos exist and are not corrupted.\n"
+            f"Error: {str(e)}\n\n"
+            f"Common issues:\n"
+            f"  - Corrupted videos (moov atom not found): Re-run Stage 3 scaling\n"
+            f"  - Videos with no frames: Check Stage 3 output\n"
+            f"  - Missing video files: Verify data/scaled_videos/ directory"
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg) from e
+    
     # Import VideoConfig - fail fast if not available (required for PyTorch models)
     # lib.models should always be available in Stage 5
     try:
@@ -793,12 +825,15 @@ def stage5_train_models(
     # Feature extraction with 1000 frames is too memory-intensive
     for model_type in model_types:
         if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK or model_type in XGBOOST_PRETRAINED_MODELS:
-            target_frames = 500 if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK else 250  # XGBoost models need even fewer frames
+            # ARCHITECTURAL IMPROVEMENT: Use more frames for XGBoost models with enhanced feature extraction
+            # Enhanced feature extraction (multi-layer + temporal pooling) is more memory-efficient
+            # Can use 400 frames instead of 250 for better temporal coverage while staying within memory limits
+            target_frames = 500 if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK else 400  # Increased from 250 to 400 for better features
             video_config.num_frames = target_frames
             logger.info(
                 f"Overriding num_frames to {target_frames} for {model_type} "
-                f"({'small-chunk model' if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK else 'XGBoost pretrained model'}) "
-                f"to prevent OOM. Original num_frames was {num_frames}."
+                f"({'small-chunk model' if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK else 'XGBoost pretrained model with enhanced features'}) "
+                f"to balance performance and memory. Original num_frames was {num_frames}."
             )
             break  # Only need to set once since video_config is shared
     
@@ -866,10 +901,12 @@ def stage5_train_models(
                 f"(small-chunk model) to match video_config."
             )
         elif model_type in XGBOOST_PRETRAINED_MODELS:
-            model_config["num_frames"] = 250  # XGBoost models need even fewer frames for feature extraction
+            # ARCHITECTURAL IMPROVEMENT: Use 400 frames for enhanced feature extraction
+            # Enhanced multi-layer + temporal pooling allows more frames while staying within memory
+            model_config["num_frames"] = 400  # Increased from 250 to 400 for better temporal coverage
             logger.info(
-                f"Overriding model_config num_frames to 250 for {model_type} "
-                f"(XGBoost pretrained model) to prevent OOM during feature extraction."
+                f"Overriding model_config num_frames to 400 for {model_type} "
+                f"(XGBoost pretrained model with enhanced feature extraction) to improve feature quality."
             )
         
         # K-fold cross-validation

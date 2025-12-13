@@ -22,8 +22,21 @@ import joblib
 try:
     import xgboost as xgb
     XGBOOST_AVAILABLE = True
+    # Check XGBoost version for API compatibility
+    # XGBoost 2.0+ moved early_stopping_rounds from fit() to constructor or callbacks
+    try:
+        XGBOOST_VERSION = tuple(map(int, xgb.__version__.split('.')))
+        USE_FIT_EARLY_STOPPING = XGBOOST_VERSION < (2, 0, 0)  # early_stopping_rounds in fit() only for < 2.0
+        logger.debug(f"XGBoost version: {xgb.__version__}, USE_FIT_EARLY_STOPPING: {USE_FIT_EARLY_STOPPING}")
+    except (AttributeError, ValueError):
+        # Fallback: assume newer API if version can't be determined
+        XGBOOST_VERSION = None
+        USE_FIT_EARLY_STOPPING = False
+        logger.warning("Could not determine XGBoost version, assuming >= 2.0 API")
 except ImportError:
     XGBOOST_AVAILABLE = False
+    XGBOOST_VERSION = None
+    USE_FIT_EARLY_STOPPING = False
 
 # Lazy import to avoid circular dependency issues
 # VideoConfig and VideoDataset will be imported when needed
@@ -135,33 +148,134 @@ def extract_features_from_pretrained_model(
             try:
                 if model_type in ["i3d", "r2plus1d", "pretrained_inception"]:
                     # For I3D, R2+1D, PretrainedInceptionVideoModel
+                    # ARCHITECTURAL IMPROVEMENT: Multi-layer feature extraction + better temporal pooling
                     # Extract features before final fc layer
                     if hasattr(model, 'backbone'):
-                        # I3D, R2+1D
-                        x = model.backbone.stem(clips)
-                        x = model.backbone.layer1(x)
-                        x = model.backbone.layer2(x)
-                        x = model.backbone.layer3(x)
-                        x = model.backbone.layer4(x)
+                        # I3D, R2+1D - Enhanced feature extraction
+                        # CRITICAL: Clips are in (N, C, T, H, W) format after shape conversion
+                        x = model.backbone.stem(clips)  # (N, C, T, H, W)
+                        x1 = model.backbone.layer1(x)
+                        x2 = model.backbone.layer2(x1)
+                        x3 = model.backbone.layer3(x2)
+                        x4 = model.backbone.layer4(x3)  # (N, C, T, H, W)
                         
-                        # Global average pooling
-                        if hasattr(model.backbone, 'avgpool'):
-                            x = model.backbone.avgpool(x)
-                        else:
-                            # Adaptive pooling if no avgpool
-                            x = nn.AdaptiveAvgPool3d((1, 1, 1))(x)
+                        # CRITICAL: Extract features BEFORE global pooling to preserve temporal information
+                        N, C, T, H, W = x4.shape
                         
-                        features = torch.flatten(x, 1)  # (N, feature_dim)
+                        # Multi-scale temporal pooling: mean, max, std, min
+                        # 1. Mean pooling over temporal dimension
+                        x4_mean = x4.mean(dim=2)  # (N, C, H, W)
+                        x4_mean_pooled = nn.AdaptiveAvgPool2d((1, 1))(x4_mean)  # (N, C, 1, 1)
+                        features_mean = torch.flatten(x4_mean_pooled, 1)  # (N, C)
+                        
+                        # 2. Max pooling over temporal dimension
+                        x4_max = x4.max(dim=2)[0]  # (N, C, H, W)
+                        x4_max_pooled = nn.AdaptiveAvgPool2d((1, 1))(x4_max)
+                        features_max = torch.flatten(x4_max_pooled, 1)  # (N, C)
+                        
+                        # 3. Temporal statistics: std, min
+                        x4_std = x4.std(dim=2)  # (N, C, H, W)
+                        x4_std_pooled = nn.AdaptiveAvgPool2d((1, 1))(x4_std)
+                        features_std = torch.flatten(x4_std_pooled, 1)  # (N, C)
+                        
+                        x4_min = x4.min(dim=2)[0]  # (N, C, H, W)
+                        x4_min_pooled = nn.AdaptiveAvgPool2d((1, 1))(x4_min)
+                        features_min = torch.flatten(x4_min_pooled, 1)  # (N, C)
+                        
+                        # 4. Multi-layer features: layer2, layer3, layer4
+                        x2_pooled = nn.AdaptiveAvgPool3d((1, 1, 1))(x2)  # (N, C2, 1, 1, 1)
+                        features_layer2 = torch.flatten(x2_pooled, 1)  # (N, C2)
+                        
+                        x3_pooled = nn.AdaptiveAvgPool3d((1, 1, 1))(x3)  # (N, C3, 1, 1, 1)
+                        features_layer3 = torch.flatten(x3_pooled, 1)  # (N, C3)
+                        
+                        # Concatenate all features
+                        features = torch.cat([
+                            features_mean,      # (N, C)
+                            features_max,       # (N, C)
+                            features_std,       # (N, C)
+                            features_min,       # (N, C)
+                            features_layer2,    # (N, C2)
+                            features_layer3,    # (N, C3)
+                        ], dim=1)  # (N, C*4 + C2 + C3)
+                        
+                        # Clean up intermediate tensors with aggressive GC
+                        del x1, x2, x3, x4, x4_mean, x4_max, x4_std, x4_min
+                        del x4_mean_pooled, x4_max_pooled, x4_std_pooled, x4_min_pooled
+                        del x2_pooled, x3_pooled
+                        del features_mean, features_max, features_std, features_min
+                        del features_layer2, features_layer3
+                        # Aggressive GC after cleanup
+                        if device_obj.type == "cuda":
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        aggressive_gc(clear_cuda=device_obj.type == "cuda")
                     elif hasattr(model, 'stem') and hasattr(model, 'layer4'):
                         # PretrainedInceptionVideoModel
-                        x = model.stem(clips)
-                        x = model.layer1(x)
-                        x = model.layer2(x)
-                        x = model.layer3(x)
-                        x = model.layer4(x)
-                        x = model.incept(x)
-                        x = model.pool(x)  # AdaptiveAvgPool3d
-                        features = torch.flatten(x, 1)  # (N, feature_dim)
+                        # ARCHITECTURAL IMPROVEMENT: Multi-layer feature extraction + better temporal pooling
+                        # Extract features from multiple layers for richer representation
+                        x = model.stem(clips)  # (N, C, T, H, W)
+                        x1 = model.layer1(x)
+                        x2 = model.layer2(x1)
+                        x3 = model.layer3(x2)
+                        x4 = model.layer4(x3)
+                        x_incept = model.incept(x4)  # (N, C, T, H, W)
+                        
+                        # CRITICAL: Extract features BEFORE global pooling to preserve temporal information
+                        # x_incept shape: (N, C, T, H, W) where T is temporal dimension
+                        N, C, T, H, W = x_incept.shape
+                        
+                        # Multi-scale temporal pooling: mean, max, and attention-weighted
+                        # 1. Mean pooling over temporal dimension (captures average features)
+                        x_mean = x_incept.mean(dim=2)  # (N, C, H, W)
+                        x_mean_pooled = nn.AdaptiveAvgPool2d((1, 1))(x_mean)  # (N, C, 1, 1)
+                        features_mean = torch.flatten(x_mean_pooled, 1)  # (N, C)
+                        
+                        # 2. Max pooling over temporal dimension (captures peak features)
+                        x_max = x_incept.max(dim=2)[0]  # (N, C, H, W)
+                        x_max_pooled = nn.AdaptiveAvgPool2d((1, 1))(x_max)  # (N, C, 1, 1)
+                        features_max = torch.flatten(x_max_pooled, 1)  # (N, C)
+                        
+                        # 3. Temporal statistics: std, min across temporal dimension
+                        x_std = x_incept.std(dim=2)  # (N, C, H, W) - temporal variance
+                        x_std_pooled = nn.AdaptiveAvgPool2d((1, 1))(x_std)
+                        features_std = torch.flatten(x_std_pooled, 1)  # (N, C)
+                        
+                        x_min = x_incept.min(dim=2)[0]  # (N, C, H, W)
+                        x_min_pooled = nn.AdaptiveAvgPool2d((1, 1))(x_min)
+                        features_min = torch.flatten(x_min_pooled, 1)  # (N, C)
+                        
+                        # 4. Multi-layer features: extract from layer2, layer3, layer4 (spatial multi-scale)
+                        # Layer 2 features (mid-level)
+                        x2_pooled = nn.AdaptiveAvgPool3d((1, 1, 1))(x2)  # (N, C2, 1, 1, 1)
+                        features_layer2 = torch.flatten(x2_pooled, 1)  # (N, C2)
+                        
+                        # Layer 3 features (high-level)
+                        x3_pooled = nn.AdaptiveAvgPool3d((1, 1, 1))(x3)  # (N, C3, 1, 1, 1)
+                        features_layer3 = torch.flatten(x3_pooled, 1)  # (N, C3)
+                        
+                        # Concatenate all features for rich representation
+                        # This gives: mean + max + std + min + layer2 + layer3 = much richer features
+                        features = torch.cat([
+                            features_mean,      # (N, C) - average temporal features
+                            features_max,       # (N, C) - peak temporal features
+                            features_std,       # (N, C) - temporal variance
+                            features_min,       # (N, C) - minimum temporal features
+                            features_layer2,    # (N, C2) - mid-level spatial features
+                            features_layer3,    # (N, C3) - high-level spatial features
+                        ], dim=1)  # (N, C*4 + C2 + C3)
+                        
+                        # Clean up intermediate tensors with aggressive GC
+                        del x1, x2, x3, x4, x_incept, x_mean, x_max, x_std, x_min
+                        del x_mean_pooled, x_max_pooled, x_std_pooled, x_min_pooled
+                        del x2_pooled, x3_pooled
+                        del features_mean, features_max, features_std, features_min
+                        del features_layer2, features_layer3
+                        # Aggressive GC after cleanup
+                        if device_obj.type == "cuda":
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        aggressive_gc(clear_cuda=device_obj.type == "cuda")
                     else:
                         # Fallback: try to get features from model
                         # Remove final layer and extract
@@ -169,31 +283,51 @@ def extract_features_from_pretrained_model(
                 
                 elif model_type in ["vit_gru", "vit_transformer"]:
                     # For ViT models, use forward_features
+                    # ARCHITECTURAL IMPROVEMENT: Better temporal pooling for ViT models
                     # CRITICAL: Clips should already be in (N, T, C, H, W) format from the shape conversion above
                     if hasattr(model, 'vit_backbone'):
                         if clips.dim() == 5:
                             N, T, C, H, W = clips.shape
                             # Reshape to (N*T, C, H, W) for ViT processing
-                            clips = clips.view(N * T, C, H, W)
+                            clips_reshaped = clips.view(N * T, C, H, W)
                         else:
                             # Fallback for unexpected dimensions
                             N = clips.shape[0]
                             T = 1
-                            clips = clips.view(N * T, -1)
+                            clips_reshaped = clips.view(N * T, -1)
                         
                         # Extract features using ViT
-                        vit_output = model.vit_backbone.forward_features(clips)
+                        vit_output = model.vit_backbone.forward_features(clips_reshaped)
                         # vit_output shape: (N*T, num_patches+1, embed_dim)
                         # Extract [CLS] token
                         frame_features = vit_output[:, 0, :]  # (N*T, embed_dim)
                         
+                        # Clean up reshaped clips immediately
+                        del clips_reshaped, vit_output
+                        
                         # Reshape back to (N, T, embed_dim) if temporal
                         if T > 1:
-                            frame_features = frame_features.view(N, T, -1)
-                            # Mean pool over temporal dimension
-                            features = frame_features.mean(dim=1)  # (N, embed_dim)
+                            frame_features = frame_features.view(N, T, -1)  # (N, T, embed_dim)
+                            
+                            # Multi-scale temporal pooling: mean, max, std, min
+                            features_mean = frame_features.mean(dim=1)  # (N, embed_dim)
+                            features_max = frame_features.max(dim=1)[0]  # (N, embed_dim)
+                            features_std = frame_features.std(dim=1)  # (N, embed_dim)
+                            features_min = frame_features.min(dim=1)[0]  # (N, embed_dim)
+                            
+                            # Concatenate temporal features
+                            features = torch.cat([
+                                features_mean,  # (N, embed_dim)
+                                features_max,  # (N, embed_dim)
+                                features_std,  # (N, embed_dim)
+                                features_min,  # (N, embed_dim)
+                            ], dim=1)  # (N, embed_dim * 4)
+                            
+                            # Clean up
+                            del frame_features, features_mean, features_max, features_std, features_min
                         else:
                             features = frame_features  # (N, embed_dim)
+                            del frame_features
                     else:
                         raise ValueError(f"Cannot extract features from {model_type}: no vit_backbone")
                 
@@ -317,22 +451,25 @@ class XGBoostPretrainedBaseline:
         self.feature_indices = None
         self.feature_names = None
         
-        # Default XGBoost parameters optimized for binary classification
+        # Default XGBoost parameters optimized for binary classification with enhanced features
+        # ARCHITECTURAL IMPROVEMENT: Better hyperparameters for richer feature space
         self.xgb_params = xgb_params or {
             'objective': 'binary:logistic',
             'eval_metric': 'logloss',
-            'max_depth': 6,
-            'learning_rate': 0.1,
-            'n_estimators': 100,
+            'max_depth': 7,  # Increased from 6 to handle richer features (multi-layer + temporal)
+            'learning_rate': 0.05,  # Reduced from 0.1 for better convergence with more features
+            'n_estimators': 200,  # Increased from 100 for better learning capacity
             'subsample': 0.8,
             'colsample_bytree': 0.8,
-            'min_child_weight': 1,
-            'gamma': 0.1,
+            'colsample_bylevel': 0.8,  # Additional regularization
+            'min_child_weight': 3,  # Increased from 1 for better regularization
+            'gamma': 0.2,  # Increased from 0.1 for better regularization
             'reg_alpha': 0.1,
-            'reg_lambda': 1.0,
+            'reg_lambda': 2.0,  # Increased from 1.0 for better regularization with more features
             'random_state': 42,
             'tree_method': 'hist',  # Memory-efficient
             'n_jobs': 1,  # Conservative for memory
+            # scale_pos_weight will be calculated dynamically in fit() based on class distribution
         }
     
     def _get_cache_path(self, video_path: str, project_root: str) -> Optional[Path]:
@@ -510,13 +647,78 @@ class XGBoostPretrainedBaseline:
         label_map = {label: idx for idx, label in enumerate(sorted(set(labels)))}
         y_binary = np.array([label_map[label] for label in labels])
         
-        # Train XGBoost
-        logger.info("Training XGBoost...")
-        self.model = xgb.XGBClassifier(**self.xgb_params)
-        self.model.fit(features_filtered, y_binary)
+        # CRITICAL: Calculate class weights for imbalanced data
+        # This is essential for binary classification with imbalanced classes
+        from collections import Counter
+        label_counts = Counter(y_binary)
+        n_class0 = label_counts.get(0, 0)
+        n_class1 = label_counts.get(1, 0)
+        
+        if n_class0 > 0 and n_class1 > 0:
+            # scale_pos_weight = n_negative / n_positive (XGBoost convention)
+            scale_pos_weight = n_class0 / n_class1
+            logger.info(f"Class distribution: Class 0={n_class0}, Class 1={n_class1}, scale_pos_weight={scale_pos_weight:.3f}")
+            
+            # Update xgb_params with class weight
+            fit_params = self.xgb_params.copy()
+            fit_params['scale_pos_weight'] = scale_pos_weight
+        else:
+            fit_params = self.xgb_params.copy()
+            logger.warning(f"Unbalanced classes detected: Class 0={n_class0}, Class 1={n_class1}. Using default weights.")
+        
+        # CRITICAL: Split training data for early stopping to prevent overfitting
+        # Use 20% of training data as validation for early stopping
+        from sklearn.model_selection import train_test_split
+        X_train, X_val, y_train, y_val = train_test_split(
+            features_filtered, y_binary,
+            test_size=0.2,
+            random_state=42,
+            stratify=y_binary
+        )
+        logger.info(f"Training XGBoost: {len(X_train)} train samples, {len(X_val)} validation samples for early stopping")
+        
+        # Train XGBoost with class weights and early stopping
+        logger.info("Training XGBoost with improved architecture (multi-layer + temporal pooling + class weights + early stopping)...")
+        self.model = xgb.XGBClassifier(**fit_params)
+        
+        # Use early stopping to prevent overfitting
+        # Monitor validation loss and stop if no improvement for 20 rounds
+        # CRITICAL: XGBoost 2.0+ moved early_stopping_rounds from fit() to callbacks
+        if USE_FIT_EARLY_STOPPING:
+            # XGBoost < 2.0: early_stopping_rounds is a parameter to fit()
+            self.model.fit(
+                X_train, y_train,
+                eval_set=[(X_val, y_val)],
+                early_stopping_rounds=20,
+                verbose=False  # Set to True for detailed logging
+            )
+        else:
+            # XGBoost >= 2.0: use callbacks for early stopping
+            try:
+                from xgboost.callback import EarlyStopping
+                callbacks = [EarlyStopping(rounds=20, save_best=True)]
+                self.model.fit(
+                    X_train, y_train,
+                    eval_set=[(X_val, y_val)],
+                    callbacks=callbacks,
+                    verbose=False
+                )
+            except (ImportError, AttributeError):
+                # Fallback: try without early stopping if callbacks not available
+                logger.warning("Early stopping callbacks not available, training without early stopping")
+                self.model.fit(
+                    X_train, y_train,
+                    eval_set=[(X_val, y_val)],
+                    verbose=False
+                )
+        
         self.is_fitted = True
         
-        logger.info("✓ XGBoost trained on pretrained model features")
+        # Log best iteration
+        if hasattr(self.model, 'best_iteration'):
+            logger.info(f"Early stopping: Best iteration = {self.model.best_iteration + 1} (out of {fit_params.get('n_estimators', 200)})")
+        
+        logger.info("✓ XGBoost trained on pretrained model features with enhanced feature extraction")
     
     def predict(self, df: pl.DataFrame, project_root: str) -> np.ndarray:
         """

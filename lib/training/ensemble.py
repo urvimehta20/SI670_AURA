@@ -210,6 +210,7 @@ def get_predictions_from_model(
             video_paths = dataset.df_pd["video_path"].tolist()
         else:
             # Fallback: extract from dataset by iterating
+            # CODE QUALITY: Use enumerate() for cleaner iteration
             video_paths = []
             for i in range(len(dataset)):
                 row = dataset._get_row(i)

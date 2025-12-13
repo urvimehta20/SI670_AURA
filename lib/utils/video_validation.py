@@ -15,17 +15,27 @@ from lib.utils.paths import resolve_video_path, validate_video_file as paths_val
 logger = logging.getLogger(__name__)
 
 
-def validate_video_file(video_path: str, project_root: str) -> Tuple[bool, Optional[str]]:
+def validate_video_file(
+    video_path: str, 
+    project_root: str, 
+    check_frames: bool = True
+) -> Tuple[bool, Optional[str]]:
     """
     Validate a single video file.
+    
+    Checks for:
+    - File existence
+    - Video corruption (moov atom errors, etc.)
+    - Videos with no frames (if check_frames=True)
     
     Args:
         video_path: Path to video file (relative or absolute)
         project_root: Project root directory
+        check_frames: If True, also check that video has at least 1 frame (default: True)
     
     Returns:
         Tuple of (is_valid, error_message)
-        is_valid: True if video can be read, False otherwise
+        is_valid: True if video can be read and is valid, False otherwise
         error_message: Error message if invalid, None if valid
     """
     try:
@@ -35,24 +45,60 @@ def validate_video_file(video_path: str, project_root: str) -> Tuple[bool, Optio
         if not Path(resolved_path).exists():
             return False, f"Video file not found: {resolved_path}"
         
-        # Use existing validation function from paths.py
+        # Use existing validation function from paths.py to check basic validity
         is_valid, error_msg = paths_validate_video_file(resolved_path, check_decode=True)
         
         if not is_valid:
             # Check for common corruption errors in error message
-            error_lower = error_msg.lower()
+            error_lower = (error_msg or "").lower()
             if 'moov atom' in error_lower:
                 return False, "Corrupted video: moov atom not found"
             elif 'corrupt' in error_lower or 'invalid' in error_lower:
                 return False, f"Corrupted video: {error_msg}"
             else:
-                return False, error_msg
+                return False, error_msg or "Video validation failed"
+        
+        # Additional check: verify video has frames (prevents runtime errors)
+        if check_frames:
+            try:
+                from lib.models import _read_video_wrapper
+                import gc
+                
+                # Try to read video to check for frames
+                video = _read_video_wrapper(resolved_path)
+                
+                if video.shape[0] == 0:
+                    # Clean up
+                    del video
+                    gc.collect()
+                    return False, "Video has no frames"
+                
+                # Clean up
+                del video
+                gc.collect()
+            except Exception as e:
+                # Check if it's a corruption error
+                error_str = str(e).lower()
+                if 'moov atom' in error_str:
+                    return False, "Corrupted video: moov atom not found"
+                elif 'corrupt' in error_str or 'invalid' in error_str:
+                    return False, f"Corrupted video: {str(e)}"
+                else:
+                    # Re-raise if it's not a corruption error (might be a real issue)
+                    return False, f"Error reading video frames: {str(e)}"
         
         # Valid video
         return True, None
                 
     except Exception as e:
-        return False, f"Error validating video: {str(e)}"
+        # Check if it's a corruption error
+        error_str = str(e).lower()
+        if 'moov atom' in error_str:
+            return False, "Corrupted video: moov atom not found"
+        elif 'corrupt' in error_str or 'invalid' in error_str:
+            return False, f"Corrupted video: {str(e)}"
+        else:
+            return False, f"Error validating video: {str(e)}"
 
 
 def validate_videos_batch(

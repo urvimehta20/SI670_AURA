@@ -14,6 +14,9 @@ from typing import Dict, List, Tuple, Optional
 import logging
 
 import os
+import hashlib
+import time
+from pathlib import Path
 import numpy as np
 import polars as pl
 
@@ -37,12 +40,88 @@ def load_metadata(csv_path: str) -> pl.DataFrame:
     return df
 
 
-def filter_existing_videos(df: pl.DataFrame, project_root: str, check_frames: bool = False) -> pl.DataFrame:
+def _get_validation_cache_path(
+    project_root: str,
+    check_corruption: bool,
+    check_frames: bool,
+    video_paths: List[str]
+) -> Path:
     """
-    Filter DataFrame to only include rows where video files exist.
+    Generate cache path for video validation results.
     
-    Optionally checks that videos have frames (slower, but prevents runtime errors).
-    By default, only checks file existence for speed. Set check_frames=True to
+    Args:
+        project_root: Project root directory
+        check_corruption: Whether corruption checking is enabled
+        check_frames: Whether frame checking is enabled
+        video_paths: List of video paths to validate
+        
+    Returns:
+        Path to cache file
+    """
+    cache_dir = Path(project_root) / "data" / ".video_validation_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create hash from sorted video paths for stable cache key
+    sorted_paths = sorted(video_paths)
+    paths_str = "\n".join(sorted_paths)
+    paths_hash = hashlib.md5(paths_str.encode()).hexdigest()[:16]
+    
+    # Include check options in cache key
+    cache_key = f"validation_{paths_hash}_corrupt{check_corruption}_frames{check_frames}.parquet"
+    
+    return cache_dir / cache_key
+
+
+def _load_validation_cache(cache_path: Path) -> Optional[pl.DataFrame]:
+    """
+    Load validation cache from disk.
+    
+    Args:
+        cache_path: Path to cache file
+        
+    Returns:
+        DataFrame with validation results (video_path, is_valid, error_reason, cache_timestamp)
+        or None if cache doesn't exist or is corrupted
+    """
+    if not cache_path.exists():
+        return None
+    
+    try:
+        cache_df = pl.read_parquet(cache_path)
+        logger.info(f"Loaded validation cache from {cache_path} ({cache_df.height} entries)")
+        return cache_df
+    except Exception as e:
+        logger.warning(f"Failed to load validation cache from {cache_path}: {e}. Will re-validate.")
+        return None
+
+
+def _save_validation_cache(cache_path: Path, validation_results: pl.DataFrame) -> None:
+    """
+    Save validation results to cache.
+    
+    Args:
+        cache_path: Path to cache file
+        validation_results: DataFrame with columns: video_path, is_valid, error_reason, cache_timestamp
+    """
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        validation_results.write_parquet(cache_path)
+        logger.info(f"Saved validation cache to {cache_path} ({validation_results.height} entries)")
+    except Exception as e:
+        logger.warning(f"Failed to save validation cache to {cache_path}: {e}")
+
+
+def filter_existing_videos(
+    df: pl.DataFrame, 
+    project_root: str, 
+    check_frames: bool = False,
+    check_corruption: bool = True
+) -> pl.DataFrame:
+    """
+    Filter DataFrame to only include rows where video files exist and are valid.
+    
+    Optionally checks that videos have frames and are not corrupted (slower, but prevents runtime errors).
+    By default, checks file existence and corruption. Set check_frames=True to
     also validate that videos have at least 1 frame.
     
     Uses centralized path resolution from video_paths module.
@@ -51,14 +130,16 @@ def filter_existing_videos(df: pl.DataFrame, project_root: str, check_frames: bo
         df: Polars DataFrame with 'video_path' column
         project_root: Root directory for resolving relative paths
         check_frames: If True, also check that videos have frames (slower, memory-intensive)
+        check_corruption: If True, check for corrupted videos (moov atom errors, etc.) (default: True)
         
     Returns:
-        Filtered DataFrame with only existing (and optionally non-empty) videos
+        Filtered DataFrame with only existing, valid (and optionally non-empty) videos
         
     Raises:
         ValueError: If no videos exist after filtering
     """
     from lib.utils.paths import check_video_path_exists, get_video_path_candidates, resolve_video_path
+    from lib.utils.video_validation import validate_video_file
     
     def _check_path(video_rel: str) -> bool:
         """Check if video file exists."""
@@ -67,6 +148,9 @@ def filter_existing_videos(df: pl.DataFrame, project_root: str, check_frames: bo
         return check_video_path_exists(str(video_rel).strip(), project_root)
     
     # First pass: check file existence (fast)
+    logger.info(f"Checking file existence for {df.height} videos...")
+    # NOTE: map_elements() is necessary here because _check_path() performs file system operations
+    # (path resolution, file existence checks) that cannot be vectorized in Polars
     try:
         existing_mask = df["video_path"].map_elements(_check_path, return_dtype=pl.Boolean)
     except (AttributeError, TypeError):
@@ -74,14 +158,170 @@ def filter_existing_videos(df: pl.DataFrame, project_root: str, check_frames: bo
         existing_mask = df["video_path"].map(_check_path)
     
     filtered = df.filter(existing_mask)
+    logger.info(f"Found {filtered.height} existing video files (filtered out {df.height - filtered.height} missing files)")
     
-    # Second pass: optionally check for frames (slower, but prevents runtime errors)
-    if check_frames:
+    # Second pass: check for corruption (moov atom errors, etc.)
+    if check_corruption and filtered.height > 0:
+        logger.info("Checking for corrupted videos (moov atom errors, etc.)...")
+        
+        # Get video paths for cache key
+        video_paths_list = filtered["video_path"].to_list()
+        
+        # Try to load cache
+        cache_path = _get_validation_cache_path(project_root, check_corruption, check_frames, video_paths_list)
+        cache_df = _load_validation_cache(cache_path)
+        
+        # Build cache lookup dictionary if cache exists
+        cache_lookup = {}
+        videos_to_validate = []
+        if cache_df is not None:
+            for row in cache_df.iter_rows(named=True):
+                video_path = row.get("video_path")
+                is_valid = row.get("is_valid", False)
+                error_reason = row.get("error_reason", None)
+                cache_lookup[video_path] = (is_valid, error_reason)
+            
+            # Find videos not in cache
+            for video_path in video_paths_list:
+                if video_path not in cache_lookup:
+                    videos_to_validate.append(video_path)
+            
+            logger.info(f"Cache hit: {len(cache_lookup)} videos, Cache miss: {len(videos_to_validate)} videos")
+        else:
+            # No cache, validate all videos
+            videos_to_validate = video_paths_list
+            logger.info(f"No cache found, validating all {len(videos_to_validate)} videos")
+        
+        corruption_count = 0
+        empty_count = 0
+        
+        def _check_valid(video_rel: str) -> Tuple[bool, Optional[str]]:
+            """Check if video is valid (not corrupted)."""
+            nonlocal corruption_count, empty_count
+            try:
+                video_path = resolve_video_path(str(video_rel).strip(), project_root)
+                is_valid, error_msg = validate_video_file(video_path, project_root)
+                
+                if not is_valid:
+                    error_lower = (error_msg or "").lower()
+                    if 'moov atom' in error_lower or 'corrupt' in error_lower:
+                        corruption_count += 1
+                    elif 'no frames' in error_lower or 'empty' in error_lower:
+                        empty_count += 1
+                
+                return is_valid, error_msg
+            except Exception as e:
+                # Any exception means invalid
+                error_str = str(e).lower()
+                if 'moov atom' in error_str or 'corrupt' in error_str:
+                    corruption_count += 1
+                return False, str(e)
+        
+        # Validate only videos not in cache
+        valid_videos = []
+        invalid_reasons = []
+        batch_size = 100
+        validated_count = 0
+        
+        # First, add cached valid videos
+        for video_path, (is_valid, error_reason) in cache_lookup.items():
+            if is_valid:
+                valid_videos.append(video_path)
+            else:
+                invalid_reasons.append(f"{video_path}: {error_reason}")
+                if error_reason:
+                    error_lower = error_reason.lower()
+                    if 'moov atom' in error_lower or 'corrupt' in error_lower:
+                        corruption_count += 1
+                    elif 'no frames' in error_lower or 'empty' in error_lower:
+                        empty_count += 1
+        
+        # Now validate videos not in cache
+        if videos_to_validate:
+            # Create a filtered DataFrame for videos to validate
+            videos_to_validate_set = set(videos_to_validate)
+            videos_to_validate_mask = filtered["video_path"].is_in(pl.Series(videos_to_validate))
+            videos_to_validate_df = filtered.filter(videos_to_validate_mask)
+            
+            for i in range(0, videos_to_validate_df.height, batch_size):
+                batch_end = min(i + batch_size, videos_to_validate_df.height)
+                batch_df = videos_to_validate_df[i:batch_end]
+                
+                for row in batch_df.iter_rows(named=True):
+                    video_rel = row["video_path"]
+                    is_valid, error_msg = _check_valid(video_rel)
+                    
+                    if is_valid:
+                        valid_videos.append(video_rel)
+                    else:
+                        invalid_reasons.append(f"{video_rel}: {error_msg}")
+                    
+                    validated_count += 1
+                
+                if validated_count % 500 == 0 or validated_count == len(videos_to_validate):
+                    logger.info(f"  Validated {validated_count}/{len(videos_to_validate)} videos... (corrupted: {corruption_count}, empty: {empty_count})")
+        
+        # Save validation results to cache
+        if videos_to_validate:
+            cache_timestamp = int(time.time())
+            cache_results = []
+            for video_path in video_paths_list:
+                if video_path in cache_lookup:
+                    # Use cached result
+                    is_valid, error_reason = cache_lookup[video_path]
+                else:
+                    # Use newly validated result
+                    is_valid = video_path in valid_videos
+                    error_reason = None
+                    if not is_valid:
+                        # Find error reason from invalid_reasons
+                        for reason in invalid_reasons:
+                            if reason.startswith(f"{video_path}:"):
+                                error_reason = reason.split(":", 1)[1].strip()
+                                break
+                
+                cache_results.append({
+                    "video_path": video_path,
+                    "is_valid": is_valid,
+                    "error_reason": error_reason or "",
+                    "cache_timestamp": cache_timestamp
+                })
+            
+            cache_results_df = pl.DataFrame(cache_results)
+            _save_validation_cache(cache_path, cache_results_df)
+        
+        # Filter to only valid videos
+        # CRITICAL: Use Polars native is_in() instead of map_elements() for efficiency
+        valid_video_list = pl.Series(valid_videos)
+        valid_mask = filtered["video_path"].is_in(valid_video_list)
+        
+        filtered = filtered.filter(valid_mask)
+        
+        if corruption_count > 0 or empty_count > 0:
+            logger.warning(
+                f"Filtered out {corruption_count} corrupted videos and {empty_count} empty videos. "
+                f"Keeping {filtered.height} valid videos."
+            )
+            if invalid_reasons and len(invalid_reasons) <= 20:
+                logger.warning("Sample of invalid videos:")
+                for reason in invalid_reasons[:10]:
+                    logger.warning(f"  {reason}")
+                if len(invalid_reasons) > 10:
+                    logger.warning(f"  ... and {len(invalid_reasons) - 10} more")
+        else:
+            logger.info(f"✓ All {filtered.height} videos are valid (no corruption detected)")
+    
+    # Third pass: optionally check for frames (slower, but prevents runtime errors)
+    if check_frames and filtered.height > 0:
         from lib.models import _read_video_wrapper
         import gc
         
+        logger.info("Checking video frames (this may take a while and use memory)...")
+        frame_count = 0
+        
         def _check_has_frames(video_rel: str) -> bool:
             """Check if video has frames."""
+            nonlocal frame_count
             try:
                 video_path = resolve_video_path(str(video_rel).strip(), project_root)
                 # Read video with minimal memory footprint
@@ -90,27 +330,42 @@ def filter_existing_videos(df: pl.DataFrame, project_root: str, check_frames: bo
                 # Clean up immediately
                 del video
                 gc.collect()  # Force garbage collection
+                if not has_frames:
+                    frame_count += 1
                 return has_frames
-            except Exception:
+            except Exception as e:
+                # Check if it's a corruption error
+                error_str = str(e).lower()
+                if 'moov atom' in error_str or 'corrupt' in error_str:
+                    frame_count += 1
                 return False
         
-        logger.info("Checking video frames (this may take a while and use memory)...")
+        # NOTE: map_elements() is necessary here because _check_has_frames() performs video I/O
+        # (reading video files, checking frame count) that cannot be vectorized in Polars
         try:
             frame_mask = filtered["video_path"].map_elements(_check_has_frames, return_dtype=pl.Boolean)
         except (AttributeError, TypeError):
             frame_mask = filtered["video_path"].map(_check_has_frames)
         
         filtered = filtered.filter(frame_mask)
+        
+        if frame_count > 0:
+            logger.warning(f"Filtered out {frame_count} videos with no frames. Keeping {filtered.height} videos with frames.")
+        else:
+            logger.info(f"✓ All {filtered.height} videos have frames")
         logger.info("Frame check complete.")
     
-    # Log how many videos were filtered out
+    # Log summary
     filtered_count = df.height - filtered.height
     if filtered_count > 0:
+        reasons = []
+        if check_corruption:
+            reasons.append("corrupted")
+        if check_frames:
+            reasons.append("empty")
+        reason_str = " or ".join(reasons) if reasons else "invalid"
         logger.warning(
-            "Filtered out %d invalid videos (missing files%s). Keeping %d valid videos.",
-            filtered_count,
-            " or empty videos" if check_frames else "",
-            filtered.height
+            f"Filtered out {filtered_count} invalid videos ({reason_str}). Keeping {filtered.height} valid videos."
         )
     
     # Validate that we have videos after filtering
@@ -128,7 +383,7 @@ def filter_existing_videos(df: pl.DataFrame, project_root: str, check_frames: bo
                     sample_paths.append(f"    - {candidate}")
         
         error_msg = (
-            f"No existing video files found after filtering. "
+            f"No valid video files found after filtering. "
             f"Original dataset had {df.height} videos. "
             f"Project root: {project_root}\n"
         )
