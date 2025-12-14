@@ -1,6 +1,31 @@
 # Model Presentation Notebooks
 
-This directory contains Jupyter notebooks for presenting and demonstrating all trained models (5alpha, 5beta, 5a-5u).
+This directory contains Jupyter notebooks for presenting and demonstrating the complete deepfake detection pipeline and all trained models.
+
+## Master Pipeline Notebook
+
+**Start here**: [`00_MASTER_PIPELINE_JOURNEY.ipynb`](00_MASTER_PIPELINE_JOURNEY.ipynb)
+
+This comprehensive notebook demonstrates the **complete end-to-end journey** from raw ZIP files to production-ready models, including:
+
+- **Data Extraction**: From password-protected ZIP archives to organized datasets
+- **Data Exploration**: Understanding dataset characteristics, class distribution, video statistics
+- **Stage 1: Augmentation**: Spatial and temporal augmentation strategies, pre-generation rationale
+- **Stage 2: Feature Extraction**: Handcrafted features (noise residual, DCT, blur/sharpness, codec cues)
+- **Stage 3: Video Scaling**: Letterbox resizing, upscaling/downscaling strategies
+- **Stage 4: Scaled Features**: Feature extraction from scaled videos
+- **Stage 5: Model Training**: 23 different architectures with hyperparameter tuning
+- **MLOps Infrastructure**: MLflow experiment tracking, DuckDB analytics, Airflow orchestration
+- **Results & Insights**: Performance analysis, key findings, next steps
+
+**Technologies Demonstrated**:
+- PyTorch, torchvision, timm (Deep Learning)
+- Polars, PyArrow, DuckDB (Data Processing)
+- MLflow (Experiment Tracking)
+- Apache Airflow (Orchestration)
+- PyAV, OpenCV (Video Processing)
+
+This notebook is designed for **ML Engineers, Data Scientists, and Researchers** at a **production-grade level**.
 
 ## Overview
 
