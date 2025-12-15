@@ -609,7 +609,6 @@ def _train_pytorch_model_fold(
     batch_size = current_config.get("batch_size", model_config.get("batch_size", 8))
     gradient_accumulation_steps = current_config.get("gradient_accumulation_steps", model_config.get("gradient_accumulation_steps", 1))
     
-    # CRITICAL: Force smaller batch sizes for memory-intensive models
     if model_type in MEMORY_INTENSIVE_MODELS_BATCH_LIMITS:
         max_batch_size = MEMORY_INTENSIVE_MODELS_BATCH_LIMITS[model_type]
         if batch_size > max_batch_size:
@@ -750,7 +749,6 @@ def _train_pytorch_model_fold(
         torch.cuda.synchronize()
         logger.info(f"Hyper-aggressive GC complete. GPU memory cleared.")
     
-    # Validate datasets
     if len(train_dataset) == 0:
         raise ValueError(f"Training dataset is empty for fold {fold_idx + 1}")
     if len(val_dataset) == 0:
@@ -802,7 +800,6 @@ def _train_pytorch_model_fold(
                         if sample_clips.dtype != torch.float32:
                             sample_clips = sample_clips.float()
                         
-                        # Test forward pass
                         try:
                             sample_output = model(sample_clips)
                             logger.info(f"Model forward pass test successful. Output shape: {sample_output.shape}")
@@ -849,7 +846,7 @@ def _train_pytorch_model_fold(
             raise ValueError(f"Model initialization failed: {e}") from e
     except (ValueError, RuntimeError) as e:
         logger.error(f"Model forward pass test failed: {e}", exc_info=True)
-            raise ValueError(f"Model initialization failed: {e}") from e
+        raise ValueError(f"Model initialization failed: {e}") from e
     
     max_oom_retries = 3
     oom_retry_count = 0
@@ -1019,7 +1016,6 @@ def _train_pytorch_model_fold(
         except (RuntimeError, ValueError, AttributeError) as e:
             logger.warning(f"Failed to log to MLflow: {e}")
     
-    # Build result dictionary
     result = {
         "fold": fold_idx + 1,
         "val_loss": val_loss,
@@ -1050,7 +1046,6 @@ def _train_pytorch_model_fold(
                 f"Recall: {metrics['recall']:.4f}, F1: {metrics['f1']:.4f}"
             )
     
-    # Cleanup
     if mlflow_tracker is not None:
         try:
             mlflow_tracker.end_run()
@@ -1109,15 +1104,12 @@ def _train_baseline_model_fold(
     model = None
     
     try:
-        # Create baseline model with hyperparameters
         baseline_config = model_config.copy()
         if hyperparams:
             baseline_config.update(hyperparams)
         
-        # Add feature paths for baseline models
         from lib.utils.paths import load_metadata_flexible
         
-        # All baseline models require Stage 2 features
         if model_type in BASELINE_MODELS:
             stage2_df = load_metadata_flexible(features_stage2_path)
             if stage2_df is not None and stage2_df.height > 0:
@@ -1134,7 +1126,6 @@ def _train_baseline_model_fold(
                     f"Please run Stage 2 feature extraction first."
                 )
             
-            # For models that use Stage 4, check if it exists
             if model_type in STAGE4_MODELS:
                 stage4_df = load_metadata_flexible(features_stage4_path)
                 if stage4_df is not None and stage4_df.height > 0:
@@ -1151,7 +1142,6 @@ def _train_baseline_model_fold(
                         f"Please run Stage 4 scaled feature extraction first."
                     )
             else:
-                # For stage2_only models, explicitly set stage4_path to None
                 if "model_specific_config" not in baseline_config:
                     baseline_config["model_specific_config"] = {}
                 baseline_config["model_specific_config"]["features_stage4_path"] = None
@@ -1159,7 +1149,6 @@ def _train_baseline_model_fold(
         
         model = create_model(model_type, baseline_config)
         
-        # Train baseline (handles feature extraction internally)
         logger.info(f"Starting model.fit() for {model_type} fold {fold_idx + 1}...")
         logger.info(f"Training data: {train_df.height} rows")
         _flush_logs()
@@ -1204,7 +1193,6 @@ def _train_baseline_model_fold(
         label_map = {label: idx for idx, label in enumerate(sorted(set(val_labels)))}
         val_y = np.array([label_map[label] for label in val_labels])
         
-        # Compute comprehensive metrics using shared utility
         metrics = compute_classification_metrics(
             y_true=val_y,
             y_pred=val_preds,
@@ -1279,7 +1267,6 @@ def _train_baseline_model_fold(
             fold_results.append(result)
     
     finally:
-        # Always clear model and aggressively free memory, even on error
         cleanup_model_and_memory(model=model if model is not None else None, clear_cuda=False)
         aggressive_gc(clear_cuda=False)
     
@@ -1323,16 +1310,14 @@ def stage5_train_models(
     Returns:
         Dictionary of training results
     """
-    # CRITICAL: Set PyTorch memory optimizations at the very start (before any model operations)
     if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         logger.info("Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True at pipeline start")
     
     # Additional PyTorch memory optimizations
     if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = False  # Disable benchmark to save memory
-        torch.backends.cudnn.deterministic = False  # Can save memory
-        # Clear cache at pipeline start
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = False
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
         logger.info("Applied global PyTorch memory optimizations at pipeline start")
@@ -1346,9 +1331,8 @@ def stage5_train_models(
     logger.info("Frames per video: %d", num_frames)
     logger.info("Output directory: %s", output_dir)
     logger.info("Initializing pipeline...")
-    _flush_logs()  # Ensure immediate output
+    _flush_logs()
     
-    # Input validation
     if not project_root or not isinstance(project_root, str):
         raise ValueError(f"project_root must be a non-empty string, got: {type(project_root)}")
     if not scaled_metadata_path or not isinstance(scaled_metadata_path, str):
@@ -1379,7 +1363,6 @@ def stage5_train_models(
     
     project_root_str = str(project_root_path)
     
-    # Ensure lib/models directory exists (create minimal stub if missing)
     try:
         _ensure_lib_models_exists(project_root_path)
     except Exception as e:
@@ -1404,7 +1387,6 @@ def stage5_train_models(
         model_types
     )
     
-    # Check if any models can be run
     if not validation_results["runnable_models"]:
         error_msg = (
             "✗ ERROR: None of the requested models can be run with the available data.\n"
@@ -1435,7 +1417,6 @@ def stage5_train_models(
     from lib.utils.data_integrity import DataIntegrityChecker
     from lib.utils.guardrails import ResourceMonitor, HealthCheckStatus, ResourceExhaustedError, DataIntegrityError
     
-    # CRITICAL: Validate metadata file integrity before loading
     metadata_path_obj = Path(scaled_metadata_path)
     is_valid, error_msg, scaled_df = DataIntegrityChecker.validate_metadata_file(
         metadata_path_obj,
@@ -1448,7 +1429,6 @@ def stage5_train_models(
         raise DataIntegrityError(f"Metadata validation failed: {error_msg}")
     
     if scaled_df is None:
-        # Fallback: try loading manually
         scaled_df = load_metadata_flexible(scaled_metadata_path)
         if scaled_df is None:
             raise FileNotFoundError(f"Scaled metadata not found: {scaled_metadata_path}")
@@ -1468,7 +1448,6 @@ def stage5_train_models(
     logger.info(f"✓ Data validation passed: {num_rows} rows (> 3000 required)")
     _flush_logs()
     
-    # CRITICAL: Resource health check before proceeding
     monitor = ResourceMonitor()
     health = monitor.full_health_check(project_root_path)
     if health.status.value >= HealthCheckStatus.UNHEALTHY.value:
@@ -1500,16 +1479,11 @@ def stage5_train_models(
     logger.info(f"Stage 5: Found {scaled_df.height} scaled videos")
     _flush_logs()
     
-    # CRITICAL: Filter out corrupted videos and videos with no frames before training
-    # This prevents runtime errors like "moov atom not found" and "Video has no frames"
     logger.info("=" * 80)
     logger.info("STAGE 5: VALIDATING VIDEOS (checking for corruption and empty videos)")
     logger.info("=" * 80)
     from lib.data import filter_existing_videos
     try:
-        # Filter corrupted videos (moov atom errors, etc.) and videos with no frames
-        # check_corruption=True: Check for corrupted videos (default, prevents moov atom errors)
-        # check_frames=True: Also check that videos have frames (prevents "Video has no frames" errors)
         scaled_df = filter_existing_videos(
             scaled_df, 
             project_root=project_root_str,
@@ -1532,8 +1506,6 @@ def stage5_train_models(
         logger.error(error_msg)
         raise ValueError(error_msg) from e
     
-    # Import VideoConfig - fail fast if not available (required for PyTorch models)
-    # lib.models should always be available in Stage 5
     try:
         from lib.models import VideoConfig
     except ImportError as e:
@@ -1557,15 +1529,11 @@ def stage5_train_models(
         "vit_transformer",     # 5l - Vision Transformer
     ]
     
-    # Ultra memory-intensive models that need even smaller chunk size (4) for maximum OOM resistance
-    # X3D and SlowFast are extremely memory-intensive and need the smallest chunk size
     MEMORY_INTENSIVE_MODELS_ULTRA_SMALL_CHUNK = [
         "x3d",                 # 5q - extremely memory intensive, needs smallest chunk size
         "slowfast",            # 5r - dual pathway architecture, very memory intensive
     ]
     
-    # XGBoost models that use pretrained models for feature extraction
-    # These need reduced num_frames to prevent OOM during feature extraction
     XGBOOST_PRETRAINED_MODELS = [
         "xgboost_pretrained_inception",  # 5f
         "xgboost_i3d",                    # 5g
@@ -1605,10 +1573,6 @@ def stage5_train_models(
             )
             break
     
-    # Frame caching is enabled by default (can be disabled via FVC_USE_FRAME_CACHE=0)
-    # CRITICAL: Frame caching is DISK-based (not RAM) - stores frames on disk to avoid repeated video decoding
-    # This can speed up training 3-5x by avoiding CPU-intensive video decoding every epoch
-    # Default: enabled (FVC_USE_FRAME_CACHE=1), can be disabled by setting FVC_USE_FRAME_CACHE=0
     use_frame_cache = os.environ.get("FVC_USE_FRAME_CACHE", "1") == "1"
     frame_cache_dir = os.environ.get("FVC_FRAME_CACHE_DIR", "data/.frame_cache")
     
@@ -1626,26 +1590,22 @@ def stage5_train_models(
         )
     
     try:
-        # Try with use_scaled_videos, fixed_size, chunk_size, and frame_cache options (newer version)
-        # CRITICAL: Set fixed_size=256 for consistent input dimensions
-        # This ensures all models get consistent input size, even when using scaled videos
-        # VideoDataset will resize to fixed_size if set, even when use_scaled_videos=True
         if use_chunked_loading and chunk_size is not None:
             video_config = VideoConfig(
                 num_frames=num_frames,
-                fixed_size=256,  # CRITICAL: Ensure consistent input size (matches scaled video dimensions)
-                use_scaled_videos=True,  # Stage 5 only trains - all preprocessing done in earlier stages
-                chunk_size=chunk_size,  # Chunked loading for OOM prevention
-                use_frame_cache=use_frame_cache,  # Enable disk-based frame caching
-                frame_cache_dir=frame_cache_dir if use_frame_cache else None  # Cache directory
+                fixed_size=256,
+                use_scaled_videos=True,
+                chunk_size=chunk_size,
+                use_frame_cache=use_frame_cache,
+                frame_cache_dir=frame_cache_dir if use_frame_cache else None
             )
         else:
             video_config = VideoConfig(
                 num_frames=num_frames,
-                fixed_size=256,  # CRITICAL: Ensure consistent input size (matches scaled video dimensions)
-                use_scaled_videos=True,  # Stage 5 only trains - all preprocessing done in earlier stages
-                use_frame_cache=use_frame_cache,  # Enable disk-based frame caching
-                frame_cache_dir=frame_cache_dir if use_frame_cache else None  # Cache directory
+                fixed_size=256,
+                use_scaled_videos=True,
+                use_frame_cache=use_frame_cache,
+                frame_cache_dir=frame_cache_dir if use_frame_cache else None
             )
     except TypeError:
         # Fallback: server version doesn't support these parameters
@@ -1667,8 +1627,6 @@ def stage5_train_models(
             video_config.frame_cache_dir = frame_cache_dir
             logger.info(f"Manually set use_frame_cache=True, frame_cache_dir={frame_cache_dir} on VideoConfig (server version fallback)")
     
-    # CRITICAL: Verify use_scaled_videos is True (Stage 5 ALWAYS uses scaled videos from Stage 3)
-    # This ensures it's set correctly even if the constructor supports it but something went wrong
     if not getattr(video_config, 'use_scaled_videos', False):
         logger.warning(
             "CRITICAL: use_scaled_videos is False in VideoConfig for Stage 5! "
@@ -1682,33 +1640,23 @@ def stage5_train_models(
     # This ensures all models get consistent input size, even when using scaled videos
     if getattr(video_config, 'fixed_size', None) != 256:
         logger.warning(
-            f"CRITICAL: fixed_size is not 256 in VideoConfig (got {getattr(video_config, 'fixed_size', None)}). "
-            f"Setting fixed_size=256 for consistent input dimensions."
+            f"fixed_size is not 256 in VideoConfig (got {getattr(video_config, 'fixed_size', None)}). "
+            f"Setting fixed_size=256."
         )
         video_config.fixed_size = 256
-        logger.info("Forced fixed_size=256 on VideoConfig (for consistent input dimensions)")
+        logger.info("Forced fixed_size=256 on VideoConfig")
     
-    # CRITICAL: Override num_frames to 500 for small-chunk models (5c-5l) to prevent OOM
-    # These models process many frames at full resolution and need to limit to 500 frames max
-    # Also override for XGBoost models that use pretrained feature extractors (5f, 5g, 5h, 5i, 5j)
-    # Feature extraction with 1000 frames is too memory-intensive
     for model_type in model_types:
         if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK or model_type in XGBOOST_PRETRAINED_MODELS:
-            # ARCHITECTURAL IMPROVEMENT: Use more frames for XGBoost models with enhanced feature extraction
-            # Enhanced feature extraction (multi-layer + temporal pooling) is more memory-efficient
-            # Can use 400 frames instead of 250 for better temporal coverage while staying within memory limits
-            target_frames = 500 if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK else 400  # Increased from 250 to 400 for better features
+            target_frames = 500 if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK else 400
             video_config.num_frames = target_frames
             logger.info(
-                f"Overriding num_frames to {target_frames} for {model_type} "
-                f"({'small-chunk model' if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK else 'XGBoost pretrained model with enhanced features'}) "
-                f"to balance performance and memory. Original num_frames was {num_frames}."
+                f"Overriding num_frames to {target_frames} for {model_type}. Original num_frames was {num_frames}."
             )
-            break  # Only need to set once since video_config is shared
+            break
     
     results = {}
     
-    # Helper function to check if a fold is already trained
     def _is_fold_complete(fold_dir: Path, model_type: str) -> bool:
         """Check if a fold directory contains a complete trained model."""
         if not fold_dir.exists():
@@ -1720,11 +1668,8 @@ def stage5_train_models(
             if model_file.exists() and model_file.stat().st_size > 0:
                 return True
         
-        # XGBoost/Baseline models: check for model files (varies by model type)
-        # Common patterns: model.pkl, model.json, model.bst, etc.
         model_files = list(fold_dir.glob("model.*"))
         if model_files:
-            # Check if any model file is non-empty
             for model_file in model_files:
                 if model_file.stat().st_size > 0:
                     return True
@@ -1747,7 +1692,6 @@ def stage5_train_models(
         logger.info(f"Stage 5: Deleted {deleted_count} existing model directories")
         _flush_logs()
     
-    # Train each model type
     for model_type in model_types:
         logger.info(f"\n{'='*80}")
         logger.info(f"Stage 5: Training model: {model_type}")
@@ -1757,11 +1701,8 @@ def stage5_train_models(
         model_output_dir = output_dir / model_type
         model_output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Get model config
         model_config = get_model_config(model_type)
         
-        # CRITICAL: Override num_frames in model_config for small-chunk models (5c-5l) and XGBoost models (5f-5j)
-        # This ensures the model is created with reduced num_frames instead of 1000
         if model_type in MEMORY_INTENSIVE_MODELS_SMALL_CHUNK:
             model_config["num_frames"] = 500
             logger.info(
@@ -1785,7 +1726,6 @@ def stage5_train_models(
             logger.warning(f"n_splits={n_splits} specified, but enforcing 5-fold CV as required")
             n_splits = 5
         
-        # Get hyperparameter grid for grid search
         from .grid_search import get_hyperparameter_grid, generate_parameter_combinations, select_best_hyperparameters
         
         param_grid = get_hyperparameter_grid(model_type)
@@ -1794,21 +1734,15 @@ def stage5_train_models(
         logger.info(f"Grid search: {len(param_combinations)} hyperparameter combinations to try")
         _flush_logs()
         
-        # OPTIMIZATION: Use smaller stratified sample for hyperparameter search (faster)
-        # Final training will use full dataset for robustness
-        # Can be controlled via FVC_GRID_SEARCH_SAMPLE_SIZE environment variable (default: 0.1 = 10%)
         from sklearn.model_selection import StratifiedShuffleSplit
         
-        # Get grid search sample size from environment (default: 10% for fastest results)
-        # Can be set to 0.2 for 20% (more robust but slower) or 0.05 for 5% (fastest but less robust)
         grid_search_sample_size = float(os.environ.get("FVC_GRID_SEARCH_SAMPLE_SIZE", "0.1"))
-        grid_search_sample_size = max(0.05, min(0.5, grid_search_sample_size))  # Clamp between 5% and 50%
+        grid_search_sample_size = max(0.05, min(0.5, grid_search_sample_size))
         
         logger.info("=" * 80)
         logger.info(f"HYPERPARAMETER SEARCH: Using {grid_search_sample_size*100:.1f}% stratified sample for efficiency")
         logger.info("=" * 80)
         
-        # Sample data for hyperparameter search
         labels = scaled_df["label"].to_list()
         test_size = 1.0 - grid_search_sample_size
         sss = StratifiedShuffleSplit(n_splits=1, test_size=test_size, random_state=42)
@@ -1820,7 +1754,6 @@ def stage5_train_models(
         logger.info(f"To change sample size, set FVC_GRID_SEARCH_SAMPLE_SIZE environment variable (current: {grid_search_sample_size})")
         _flush_logs()
         
-        # Create folds from sample for hyperparameter search
         grid_search_folds = stratified_kfold(
             sample_df,
             n_splits=n_splits,
@@ -1833,10 +1766,8 @@ def stage5_train_models(
         logger.info(f"Using {n_splits}-fold stratified cross-validation on {grid_search_sample_size*100:.1f}% sample for hyperparameter search")
         _flush_logs()
         
-        # Store results for all hyperparameter combinations
         all_grid_results = []
         
-        # Grid search: try each hyperparameter combination on sample
         if not param_combinations:
             # No grid search, use default config
             param_combinations = [{}]
@@ -1849,9 +1780,7 @@ def stage5_train_models(
             logger.info(f"{'='*80}")
             _flush_logs()
             
-            # Update model_config with current hyperparameters
             current_config = model_config.copy()
-            # Filter batch_size from params for memory-intensive models (will be capped later)
             params_to_apply = params.copy()
             if model_type in MEMORY_INTENSIVE_MODELS_BATCH_LIMITS and "batch_size" in params_to_apply:
                 max_batch = MEMORY_INTENSIVE_MODELS_BATCH_LIMITS[model_type]
@@ -1863,10 +1792,8 @@ def stage5_train_models(
                     del params_to_apply["batch_size"]
             current_config.update(params_to_apply)
             
-            # Store fold results for this parameter combination
             param_fold_results = []
             
-            # Train all folds with this hyperparameter combination (using sample)
             for fold_idx in range(n_splits):
                 logger.info(f"\nHyperparameter Search - {model_type} - Fold {fold_idx + 1}/{n_splits} ({grid_search_sample_size*100:.1f}% sample)")
                 _flush_logs()
@@ -1882,19 +1809,13 @@ def stage5_train_models(
                         logger.warning(f"Could not delete {fold_output_dir}: {e}")
                         _flush_logs()
                 
-                # Check if fold is already complete (resume mode) - only if not deleting
                 if resume and not delete_existing and _is_fold_complete(fold_output_dir, model_type):
                     logger.info(f"Fold {fold_idx + 1} already trained (found existing model). Skipping.")
                     logger.info(f"To retrain this fold, use --delete-existing flag")
-                    # Load existing results if available, otherwise create placeholder
-                    # Note: We can't easily reconstruct metrics from saved models, so we'll skip this fold
-                    # in grid search results but continue with other folds
                     continue
                 
-                # Get the specific fold from sample
                 train_df, val_df = grid_search_folds[fold_idx]
             
-                # Validate no data leakage (check dup_group if present)
                 if "dup_group" in scaled_df.columns:
                     train_groups = set(train_df["dup_group"].unique().to_list())
                     val_groups = set(val_df["dup_group"].unique().to_list())
