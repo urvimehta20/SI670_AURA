@@ -1,5 +1,8 @@
 # AURA - Authenticity Understanding of Real vs Artificial Shortform Videos
 
+![AURA- Authenticity Understanding for Real vs Artificial Shortform Videos Santosh Desai Suzane Fernandes Urvi Mehta](https://github.com/user-attachments/assets/d8759923-f308-4cd8-a7d0-db3935535b86)
+
+
 A deep learning project for binary classification of videos (real vs. fake) using 3D Convolutional Neural Networks with transfer learning.
 
 ## Overview
